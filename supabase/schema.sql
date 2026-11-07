@@ -48,6 +48,13 @@ create policy "items_insert" on public.items for insert to authenticated with ch
 create policy "items_update" on public.items for update to authenticated using (public.is_member()) with check (public.is_member());
 create policy "items_delete" on public.items for delete to authenticated using (public.is_member());
 
+-- Права доступа явно (работает при любых настройках «автоматического открытия таблиц»)
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on public.items to authenticated;
+revoke all on public.items from anon;
+revoke all on public.members from anon, authenticated;
+grant execute on function public.is_member() to authenticated;
+
 -- 5. Живое обновление: изменения жены сразу появляются у вас и наоборот
 do $$
 begin

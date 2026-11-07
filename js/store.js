@@ -176,7 +176,7 @@
   // ---------- Импорт рецепта по ссылке (через функцию Supabase) ----------
   Store.canImport = () => Store.mode === 'cloud';
   Store.importRecipe = async (url) => {
-    const { data, error } = await Store.client.functions.invoke('import-recipe', { body: { url } });
+    const { data, error } = await Store.client.functions.invoke(cfg.importFunction || 'import-recipe', { body: { url } });
     if (error) {
       let msg = error.message;
       try { const body = await error.context.json(); if (body && body.error) msg = body.error; } catch (e) { /* нет тела */ }

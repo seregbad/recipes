@@ -156,8 +156,8 @@
     const selStart = focusId && a.selectionStart;
     const scrollY = window.scrollY;
 
-    if (needLogin) { main.innerHTML = viewLogin(); $('#tabbar').hidden = true; $('#alert').innerHTML = ''; return; }
-    $('#tabbar').hidden = false;
+    $('#tabbar').hidden = $('#topnav').hidden = $('#settings-btn').hidden = needLogin;
+    if (needLogin) { main.innerHTML = viewLogin(); $('#alert').innerHTML = ''; return; }
     catalog();
     const r = route();
     const nav = r.name === 'recipe' ? 'recipes' : r.name;
