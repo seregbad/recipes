@@ -1,0 +1,24 @@
+name: Напоминания о сроках
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # каждый день в 09:00 по Москве (06:00 UTC)
+  workflow_dispatch:       # кнопка «Run workflow» для проверки вручную
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Проверить сроки и написать в Telegram
+        run: node scripts/reminders.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          REMIND_DAYS: ${{ vars.REMIND_DAYS }}
+          APP_URL: ${{ vars.APP_URL }}
