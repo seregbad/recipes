@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Наша кухня</title>
+  <meta name="description" content="Наши рецепты, меню недели, продукты, покупки и заготовки">
+  <meta name="theme-color" content="#c2562f">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Наша кухня">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/recipes"><img src="icons/icon.svg" alt="" width="28" height="28"><span>Наша кухня</span><small id="mode"></small></a>
+    <nav id="topnav" data-nav aria-label="Разделы"></nav>
+    <a id="settings-btn" class="icon-btn" href="#/settings" aria-label="Настройки"></a>
+  </header>
+
+  <div id="alert"></div>
+  <main id="view" class="wrap"><div class="empty small">Загрузка…</div></main>
+
+  <nav id="tabbar" class="tabbar" data-nav aria-label="Разделы"></nav>
+
+  <dialog id="modal"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <datalist id="dl-ing"></datalist>
+  <datalist id="dl-units"></datalist>
+  <datalist id="dl-places"></datalist>
+
+  <script src="js/config.js"></script>
+  <script>
+    // библиотека Supabase нужна только когда база подключена
+    if (window.APP_CONFIG && APP_CONFIG.supabaseUrl) document.write('<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"><\/script>');
+  </script>
+  <script src="js/ingredients.js"></script>
+  <script src="js/seed.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
