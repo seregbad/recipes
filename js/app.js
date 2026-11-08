@@ -45,6 +45,8 @@
     flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
     share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
     next: '<path d="m9 18 6-6-6-6"/>',
+    camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
+    wallet: '<path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
   };
   const icon = (name, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${I[name]}</svg>`;
 
@@ -270,6 +272,24 @@
     return `<span class="badge st-${s}">${s === 'liked' ? icon('heart', 'fill') : ''}${esc(STATUS[s])}</span>`;
   };
   function safeHost(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return ''; } }
+  // ---------- Пересчёт на порции ----------
+  const scaleFor = {}; // рецепт → выбранное число порций (живёт, пока открыто приложение)
+  const baseServings = (r) => { const m = String(r.servings || '').match(/\d+/); return m ? +m[0] : 0; };
+  const scaleOf = (r) => { const b = baseServings(r); return b && scaleFor[r.id] ? scaleFor[r.id] / b : 1; };
+  const servWord = (n) => `${n} ${U.plural(n, 'порция', 'порции', 'порций')}`;
+  const ingText = (i, f = 1) => (f !== 1 && i.qty
+    ? [i.name, U.fmtQty(U.scaleQty(i.qty, f), i.unit)].filter(Boolean).join(' — ')
+    : i.raw || [i.name, U.fmtQty(i.qty, i.unit)].filter(Boolean).join(' — '));
+  function servingsStepper(r) {
+    const b = baseServings(r);
+    if (!b) return '';
+    const cur = scaleFor[r.id] || b;
+    return `<div class="serv" role="group" aria-label="Порции">
+      <button class="icon-btn" data-act="serv" data-id="${esc(r.id)}" data-d="-1" ${cur <= 1 ? 'disabled' : ''} aria-label="Меньше порций">${icon('minus')}</button>
+      <span>${servWord(cur)}</span>
+      <button class="icon-btn" data-act="serv" data-id="${esc(r.id)}" data-d="1" aria-label="Больше порций">${icon('plus')}</button></div>`;
+  }
+
   const lastCooked = (r) => (r.cooked && r.cooked.length ? r.cooked.reduce((m, d) => (d > m ? d : m)) : '');
   function cookedText(r) {
     const n = (r.cooked || []).length;
@@ -287,8 +307,10 @@
     return `
       <a class="back" href="#/recipes">${icon('back')}Рецепты</a>
       <article class="recipe">
-        ${r.image ? `<div class="hero"><img src="${esc(r.image)}" alt="" referrerpolicy="no-referrer"></div>` : ''}
+        ${r.image ? `<div class="hero"><img src="${esc(r.image)}" alt="" referrerpolicy="no-referrer">
+          <label class="hero-btn" title="Заменить фото">${icon('camera')}<input type="file" accept="image/*" data-act-change="photo-recipe" data-id="${esc(r.id)}" hidden></label></div>` : ''}
         <h1>${esc(r.title)}</h1>
+        ${r.image ? '' : `<label class="btn small add-photo">${icon('camera')}<span>Добавить фото блюда</span><input type="file" accept="image/*" data-act-change="photo-recipe" data-id="${esc(r.id)}" hidden></label>`}
         <div class="meta">
           ${r.category ? `<span>${esc(r.category)}</span>` : ''}
           ${r.servings ? `<span>${icon('users')}${esc(r.servings)}</span>` : ''}
@@ -309,13 +331,14 @@
         <section class="card">
           <div class="card-head"><h2>Ингредиенты</h2>
             ${a.total ? `<span class="muted small">дома есть ${a.have} из ${a.total}</span>` : ''}</div>
+          ${servingsStepper(r)}
           <ul class="ings">
             ${(r.ingredients || []).map((i) => {
               const ignored = ui.ignoreStaples && (U.isStaple(ingLabel(i)) || i.unit === 'по вкусу');
               const miss = missingSet.has(i);
               return `<li class="${ignored ? 'staple' : miss ? 'miss' : 'have'}">
                 <span class="dot">${ignored ? '' : miss ? icon('x') : icon('check')}</span>
-                <span>${esc(i.raw || [i.name, U.fmtQty(i.qty, i.unit)].filter(Boolean).join(' — '))}</span></li>`;
+                <span>${esc(ingText(i, scaleOf(r)))}</span></li>`;
             }).join('') || '<li class="muted">Ингредиенты не указаны</li>'}
           </ul>
           ${a.missing.length ? `<button class="btn primary block" data-act="recipe-to-shop" data-id="${esc(r.id)}">${icon('cart')}<span>Не хватает ${a.missing.length}: добавить в покупки</span></button>` : a.total ? `<p class="ok-line">${icon('check')} Всё есть дома, можно готовить</p>` : ''}
@@ -360,12 +383,46 @@
           <textarea name="ingredients" rows="8">${esc(lines)}</textarea></label>
         <label>Приготовление <small class="muted">(каждый шаг с новой строки)</small><textarea name="steps" rows="6">${esc(r.steps || '')}</textarea></label>
         <label>Заметки<textarea name="notes" rows="2" placeholder="что поменяли, кому понравилось…">${esc(r.notes || '')}</textarea></label>
-        <label>Ссылка на фото<input name="image" type="url" value="${esc(r.image || '')}"></label>
+        <div class="photo-field">
+          <input type="hidden" name="image" value="${esc(r.image || '')}">
+          <div class="photo-prev">${r.image ? `<img src="${esc(r.image)}" alt="" referrerpolicy="no-referrer">` : icon('camera')}</div>
+          <div class="row wrap">
+            <label class="btn">${icon('camera')}<span>${r.image ? 'Заменить фото' : 'Добавить фото'}</span><input type="file" accept="image/*" data-act-change="photo-form" hidden></label>
+            <button type="button" class="btn danger-ghost" data-act="photo-clear" ${r.image ? '' : 'hidden'}>Убрать</button>
+          </div>
+        </div>
         <div class="form-actions">
           <button type="button" class="btn" data-act="close">Отмена</button>
           <button class="btn primary" type="submit">Сохранить</button>
         </div>
       </form>`;
+  }
+
+  // ---------- Фото: сжатие перед загрузкой ----------
+  async function compressImage(file) {
+    const local = Store.mode === 'local';
+    const max = local ? 720 : 1280, quality = local ? 0.7 : 0.82;
+    let src;
+    try { src = await createImageBitmap(file); } catch (e) {
+      src = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Не получилось открыть картинку'));
+        img.src = URL.createObjectURL(file);
+      });
+    }
+    const w = src.width, h = src.height, k = Math.min(1, max / Math.max(w, h));
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * k); c.height = Math.round(h * k);
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    return await new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error('Не получилось сжать фото'))), 'image/jpeg', quality));
+  }
+  function setFormPhoto(form, url) {
+    form.image.value = url || '';
+    const prev = form.querySelector('.photo-prev');
+    if (prev) prev.innerHTML = url ? `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer">` : icon('camera');
+    const clear = form.querySelector('[data-act="photo-clear"]');
+    if (clear) clear.hidden = !url;
   }
 
   function parseIngredients(text) {
@@ -510,12 +567,39 @@
     return Store.save('pantry', { name: name.trim(), qty: qty || '', unit: unit || '', updated_on: U.today() });
   }
 
+  // Добавить в покупки. Если продукт уже в списке — количества складываются
+  // (300 г + 300 г = 600 г). src — откуда добавлено (рецепт, меню недели): повторное
+  // нажатие той же кнопки не удваивает количество.
   async function addToShopping(items) {
-    const seen = new Set(Store.all('shopping').filter((s) => s.status !== 'bought').map((t) => U.norm(t.name)));
-    const fresh = items.filter((it) => { const n = U.norm(it.name); if (!n || seen.has(n)) return false; seen.add(n); return true; })
-      .map((it) => ({ name: it.name, qty: it.qty || '', unit: it.unit || '', note: it.note || '', status: 'todo', created_on: U.today() }));
+    const todo = Store.all('shopping').filter((s) => s.status !== 'bought');
+    const byName = new Map(); // norm → запись (новая или копия существующей)
+    const fresh = [], changed = new Set();
+    for (const it of items) {
+      const n = U.norm(it.name);
+      if (!n) continue;
+      let t = byName.get(n);
+      if (!t) {
+        const ex = todo.find((x) => U.norm(x.name) === n);
+        if (ex) { t = { ...ex, srcs: [...(ex.srcs || [])] }; byName.set(n, t); }
+      }
+      if (t) {
+        if (it.src && t.srcs && t.srcs.includes(it.src)) continue;
+        if (it.qty) {
+          const s = t.qty ? U.sumQty([t, it]) : { qty: it.qty, unit: it.unit || '' };
+          if (s.qty) { t.qty = s.qty; t.unit = s.unit; }
+        }
+        if (it.src) t.srcs = [...(t.srcs || []), it.src];
+        if (it.note && !String(t.note || '').includes(it.note)) t.note = [t.note, it.note].filter(Boolean).join('; ');
+        if (t.id) changed.add(t);
+        continue;
+      }
+      t = { name: it.name, qty: it.qty || '', unit: it.unit || '', note: it.note || '', status: 'todo', created_on: U.today(), srcs: it.src ? [it.src] : [] };
+      byName.set(n, t);
+      fresh.push(t);
+    }
     if (fresh.length) await Store.saveMany('shopping', fresh);
-    return fresh.length;
+    if (changed.size) await Store.saveMany('shopping', [...changed]);
+    return fresh.length + changed.size;
   }
 
   // =====================================================================
@@ -528,9 +612,10 @@
       <div class="page-head"><h1>Покупки</h1></div>
       <div class="seg">
         <button class="${ui.shopTab === 'todo' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="todo">Купить · ${todo.length}</button>
-        <button class="${ui.shopTab === 'history' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="history">История покупок</button>
+        <button class="${ui.shopTab === 'history' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="history">История</button>
+        <button class="${ui.shopTab === 'money' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="money">Расходы</button>
       </div>
-      ${ui.shopTab === 'todo' ? `
+      ${ui.shopTab === 'money' ? `<div id="list">${expensesView()}</div>` : ui.shopTab === 'todo' ? `
         <form class="add-row qty-row" data-form="shop-add">
           <input id="s-name" name="name" list="dl-ing" placeholder="Что купить" required autocomplete="off">
           <input name="qty" placeholder="Кол-во" inputmode="decimal">
@@ -583,13 +668,78 @@
     if (!bought.length) return `<div class="empty small">${q ? 'Не покупали' : 'Здесь будет история: что, сколько и когда купили'}</div>`;
     const groups = {};
     bought.forEach((s) => (groups[s.bought_on] = groups[s.bought_on] || []).push(s));
-    return Object.keys(groups).map((d) => `
-      <h3 class="group">${esc(U.fmtDate(d))} <small>${groups[d].length}</small></h3>
+    return `<p class="muted small">Впишите цену в поле «₽» справа, и покупка попадёт в «Расходы».</p>` + Object.keys(groups).map((d) => {
+      const sum = groups[d].reduce((t, s) => t + priceOf(s), 0);
+      return `
+      <h3 class="group">${esc(U.fmtDate(d))} <small>${groups[d].length}${sum ? ' · ' + rub(sum) : ''}</small></h3>
       <ul class="slist">${groups[d].map((s) => `<li>
-        <button class="pname" data-act="shop-edit" data-id="${esc(s.id)}"><b>${esc(s.name)}</b><small>${esc([U.fmtQty(s.qty, s.unit), s.price ? s.price + ' ₽' : ''].filter(Boolean).join(' · '))}</small></button>
+        <button class="pname" data-act="shop-edit" data-id="${esc(s.id)}"><b>${esc(s.name)}</b><small>${esc(U.fmtQty(s.qty, s.unit))}</small></button>
+        <input class="price" id="pr-${esc(s.id)}" type="text" inputmode="decimal" placeholder="₽" value="${esc(s.price || '')}" data-price="${esc(s.id)}" aria-label="Цена, ₽">
         <button class="icon-btn" title="Купить снова" aria-label="Купить снова" data-act="shop-again" data-n="${esc(s.name)}" data-q="${esc(s.qty || '')}" data-u="${esc(s.unit || '')}">${icon('repeat')}</button>
         <button class="icon-btn" aria-label="Удалить из истории" data-act="shop-del" data-id="${esc(s.id)}">${icon('trash')}</button>
-      </li>`).join('')}</ul>`).join('');
+      </li>`).join('')}</ul>`;
+    }).join('');
+  }
+
+  // ---------- Расходы ----------
+  const priceOf = (s) => { const v = parseFloat(String(s.price || '').replace(/\s/g, '').replace(',', '.')); return isFinite(v) && v > 0 ? v : 0; };
+  const rub = (n) => Math.round(n).toLocaleString('ru-RU') + ' ₽';
+  const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+  const MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+  const MONTHS_IN = ['январе', 'феврале', 'марте', 'апреле', 'мае', 'июне', 'июле', 'августе', 'сентябре', 'октябре', 'ноябре', 'декабре'];
+  const monthIn = (ym) => MONTHS_IN[Number(ym.split('-')[1]) - 1];
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const monthLabel = (ym, full) => { const [y, m] = ym.split('-').map(Number); return (full ? MONTHS_FULL : MONTHS_SHORT)[m - 1] + (full && y !== new Date().getFullYear() ? ' ' + y : ''); };
+
+  function expensesView() {
+    const bought = Store.all('shopping').filter((s) => s.status === 'bought' && s.bought_on);
+    const thisMonth = U.today().slice(0, 7);
+    // последние 6 месяцев
+    const months = [];
+    const d0 = U.parseDate(thisMonth + '-01');
+    for (let i = 5; i >= 0; i--) { const d = new Date(d0.getFullYear(), d0.getMonth() - i, 1); months.push(U.toISODate(d).slice(0, 7)); }
+    const sel = months.includes(ui.expMonth) ? ui.expMonth : thisMonth;
+    const byMonth = Object.fromEntries(months.map((m) => [m, 0]));
+    bought.forEach((s) => { const m = s.bought_on.slice(0, 7); if (m in byMonth) byMonth[m] += priceOf(s); });
+    const inSel = bought.filter((s) => s.bought_on.slice(0, 7) === sel);
+    const priced = inSel.filter((s) => priceOf(s));
+    const total = byMonth[sel];
+    const prevIdx = months.indexOf(sel) - 1;
+    const prev = prevIdx >= 0 ? byMonth[months[prevIdx]] : 0;
+    const noPrice = inSel.length - priced.length;
+
+    if (!bought.some((s) => priceOf(s))) {
+      return `<div class="empty">${icon('wallet', 'big')}<h3>Пока нет цен</h3><p>Откройте вкладку «История» и впишите цену в поле «₽» у купленных продуктов. Здесь появятся расходы по месяцам и по отделам магазина.</p></div>`;
+    }
+
+    const maxM = Math.max(...Object.values(byMonth), 1);
+    const monthBars = `<div class="mbars" role="img" aria-label="Расходы по месяцам">${months.map((m) => {
+      const v = byMonth[m], h = Math.round((v / maxM) * 100);
+      return `<button class="mbar ${m === sel ? 'on' : ''}" data-act="set" data-k="expMonth" data-v="${m}" title="${esc(monthLabel(m, true))}: ${rub(v)}">
+        <span class="mv">${v ? rub(v).replace(' ₽', '') : ''}</span><span class="col"><i style="height:${Math.max(h, v ? 3 : 0)}%"></i></span><span class="ml">${monthLabel(m)}</span></button>`;
+    }).join('')}</div>`;
+
+    const byCat = {};
+    priced.forEach((s) => { const c = catOf(s.name); byCat[c] = (byCat[c] || 0) + priceOf(s); });
+    const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+    const maxC = cats.length ? cats[0][1] : 1;
+    const byProd = {};
+    priced.forEach((s) => { const n = U.norm(s.name); byProd[n] = byProd[n] || { name: s.name, sum: 0, n: 0 }; byProd[n].sum += priceOf(s); byProd[n].n++; });
+    const top = Object.values(byProd).sort((a, b) => b.sum - a.sum).slice(0, 10);
+
+    return `
+      <div class="stats">
+        <div class="stat"><small>${esc(cap(monthLabel(sel, true)))}</small><b>${rub(total)}</b>
+          ${prev ? `<small class="muted">${total >= prev ? 'больше' : 'меньше'}, чем в ${esc(monthIn(months[prevIdx]))} (${rub(prev)})</small>` : ''}</div>
+        <div class="stat"><small>Покупок с ценой</small><b>${priced.length} из ${inSel.length}</b>
+          ${noPrice ? `<small class="muted">${noPrice} без цены: впишите в «Истории»</small>` : ''}</div>
+      </div>
+      <section class="card"><h2>По месяцам</h2>${monthBars}<p class="muted small">Нажмите на месяц, чтобы посмотреть подробности.</p></section>
+      ${cats.length ? `<section class="card"><h2>По отделам в ${esc(monthIn(sel))}</h2>
+        <ul class="hbars">${cats.map(([c, v]) => `<li title="${esc(c)}: ${rub(v)}"><span class="hl">${esc(c)}</span>
+          <span class="track"><i style="width:${Math.max(2, Math.round((v / maxC) * 100))}%"></i></span><b>${rub(v)}</b></li>`).join('')}</ul></section>` : ''}
+      ${top.length ? `<section class="card"><h2>Больше всего потратили на</h2>
+        <ul class="toplist">${top.map((p) => `<li><span>${esc(p.name)}${p.n > 1 ? ` <small class="muted">×${p.n}</small>` : ''}</span><b>${rub(p.sum)}</b></li>`).join('')}</ul></section>` : ''}`;
   }
 
   function shopForm(s) {
@@ -754,7 +904,8 @@
       </div>
       ${(r.ingredients || []).length ? `<section class="cook-ings"><h2>Ингредиенты <small class="muted">нажмите, когда положили</small></h2>
         <div class="cook-ing-list">${r.ingredients.map((i, n) => `<button class="cing ${cookState.done.has(n) ? 'done' : ''}" data-act="cook-ing" data-i="${n}">
-          <span class="dot">${icon('check')}</span><span>${esc(i.raw || [i.name, U.fmtQty(i.qty, i.unit)].filter(Boolean).join(' — '))}</span></button>`).join('')}</div></section>` : ''}
+          <span class="dot">${icon('check')}</span><span>${esc(ingText(i, scaleOf(r)))}</span></button>`).join('')}</div>
+        ${servingsStepper(r)}</section>` : ''}
       <section class="cook-steps">
         ${steps.length ? steps.map((t, n) => `<div class="cstep ${n === cur ? 'cur' : ''} ${n < cur ? 'past' : ''}" data-act="cook-step" data-i="${n}">
           <b>Шаг ${n + 1} из ${steps.length}</b><p>${esc(t)}</p>
@@ -817,7 +968,7 @@
       const p = pantry().find((x) => !used.has(x.id) && (U.sameIng(x.name, ingLabel(i)) || U.sameIng(x.name, i.name)));
       if (!p) continue;
       used.add(p.id);
-      const left = U.subtractQty(p.qty, p.unit, i.qty, i.unit);
+      const left = U.subtractQty(p.qty, p.unit, U.scaleQty(i.qty, scaleOf(r)), i.unit);
       if (left !== null && left > 0) plan.push({ p, mode: 'sub', left, checked: true, text: `${U.fmtQty(p.qty, p.unit)} → ${U.fmtQty(U.fmtNum(left), p.unit)}` });
       else if (left !== null) plan.push({ p, mode: 'remove', checked: true, text: 'закончится' });
       else plan.push({ p, mode: 'remove', checked: false, text: 'закончилось?' });
@@ -886,6 +1037,10 @@
     if (d.rid) { const r = Store.get('recipes', d.rid); return r ? r.title : '(рецепт удалён)'; }
     return d.text || '';
   };
+  // заморозка, подходящая к блюду: связана с рецептом или совпадает по названию (так же считает вечерний бот)
+  const inFreezer = (rid, title) => activePreserves().find((p) => p.kind !== 'jar' && (parseFloat(p.qty) || 0) > 0 &&
+    ((rid && p.recipe_id === rid) || (title && U.sameIng(p.name, title))));
+  const freezerBadge = (p) => (p ? `<span class="fz" title="В морозилке: ${esc(U.fmtQty(p.qty, p.unit))}">${icon('snow')}</span>` : '');
   const weekDishes = (days) => {
     const out = [];
     days.forEach((d) => SLOTS.forEach(([k]) => (menuDay(d)[k] || []).forEach((x) => out.push(x))));
@@ -915,7 +1070,7 @@
         return `<section class="day ${d === today ? 'today' : ''} ${d < today ? 'past' : ''}">
           <h3>${WD[i]}, ${esc(U.fmtDate(d))}${d === today ? ' <em class="tag ok">сегодня</em>' : ''}</h3>
           ${SLOTS.map(([k, l]) => `<div class="slot"><span class="slot-l">${l}</span><div class="dishes">
-            ${(day[k] || []).map((x, j) => `<span class="dish">${x.rid ? `<a href="#/recipe/${encodeURIComponent(x.rid)}">${esc(dishTitle(x))}</a>` : `<span>${esc(dishTitle(x))}</span>`}<button data-act="menu-del" data-date="${d}" data-slot="${k}" data-j="${j}" aria-label="Убрать">${icon('x')}</button></span>`).join('')}
+            ${(day[k] || []).map((x, j) => `<span class="dish">${freezerBadge(inFreezer(x.rid, dishTitle(x)))}${x.rid ? `<a href="#/recipe/${encodeURIComponent(x.rid)}">${esc(dishTitle(x))}</a>` : `<span>${esc(dishTitle(x))}</span>`}<button data-act="menu-del" data-date="${d}" data-slot="${k}" data-j="${j}" aria-label="Убрать">${icon('x')}</button></span>`).join('')}
             <button class="dish add" data-act="menu-pick" data-date="${d}" data-slot="${k}" aria-label="Добавить блюдо: ${l}">${icon('plus')}</button>
           </div></div>`).join('')}
         </section>`;
@@ -945,8 +1100,9 @@
       .sort((a, b) => (b.status === 'liked') - (a.status === 'liked') || String(a.title).localeCompare(String(b.title), 'ru'));
     $('#pick-list', box).innerHTML = list.length ? list.map((r) => {
       const a = analyze(r, names);
+      const fz = inFreezer(r.id, r.title);
       return `<button type="button" class="pick-item" data-act="pick" data-rid="${esc(r.id)}"><b>${esc(r.title)}</b>
-        <small>${esc(r.category || '')}${a.total ? ` · дома ${a.have} из ${a.total}` : ''}</small></button>`;
+        <small>${esc(r.category || '')}${fz ? ` · ❄ в морозилке ${esc(U.fmtQty(fz.qty, fz.unit))}` : a.total ? ` · дома ${a.have} из ${a.total}` : ''}</small></button>`;
     }).join('') : `<div class="empty small">Нет подходящих блюд</div>`;
   }
 
@@ -971,7 +1127,8 @@
         const since = last ? U.daysBetween(last, U.today()) : null;
         // давно не готовили — чаще, готовили на днях — реже
         const recency = since === null ? 1.3 : since < 4 ? 0.2 : Math.min(1 + since / 30, 3);
-        return (r.status === 'liked' ? 2 : 1) * (1 + (a.total ? a.have / a.total : 0)) * recency;
+        const frozen = inFreezer(r.id, r.title) ? 1.5 : 1; // есть в морозилке — пора использовать
+        return (r.status === 'liked' ? 2 : 1) * (1 + (a.total ? a.have / a.total : 0)) * recency * frozen;
       });
       let x = Math.random() * w.reduce((s, v) => s + v, 0);
       let chosen = fresh[fresh.length - 1];
@@ -996,17 +1153,20 @@
 
   async function weekToShopping() {
     const names = pantry().map((p) => p.name);
-    const need = new Map(); // продукт → блюда
-    weekDishes(weekDays(ui.menuWeek || 0)).forEach((x) => {
+    const days = weekDays(ui.menuWeek || 0);
+    const need = new Map(); // продукт → { количества, блюда }
+    weekDishes(days).forEach((x) => {
       const r = x.rid && Store.get('recipes', x.rid);
-      if (!r) return;
+      if (!r || inFreezer(r.id, r.title)) return; // из морозилки — готовить не нужно
       analyze(r, names).missing.forEach((i) => {
         const n = ingLabel(i);
-        if (!need.has(n)) need.set(n, new Set());
-        need.get(n).add(r.title);
+        if (!need.has(n)) need.set(n, { qtys: [], titles: new Set() });
+        const e = need.get(n);
+        e.qtys.push({ qty: i.qty, unit: i.unit });
+        e.titles.add(r.title);
       });
     });
-    return addToShopping([...need].map(([name, titles]) => ({ name, note: 'меню: ' + [...titles].join(', ') })));
+    return addToShopping([...need].map(([name, e]) => ({ name, ...U.sumQty(e.qtys), note: 'меню: ' + [...e.titles].join(', '), src: 'week:' + days[0] })));
   }
 
   // =====================================================================
@@ -1040,6 +1200,11 @@
           <button class="btn" data-act="export">${icon('download')}<span>Сохранить копию (.json)</span></button>
           <label class="btn">${icon('upload')}<span>Загрузить копию</span><input type="file" accept=".json,application/json" data-act-change="import" hidden></label>
           <button class="btn" data-act="seed">${icon('book')}<span>Добавить блюда из «Меню недели»</span></button>
+          ${(() => {
+            const seeds = new Set((window.SEED_RECIPES || []).map((s) => U.norm(s[0])));
+            const n = Store.all('recipes').filter((r) => seeds.has(U.norm(r.title)) && !(r.ingredients || []).some((i) => i.qty)).length;
+            return n ? `<button class="btn primary" data-act="seed-qty">${icon('plus')}<span>Добавить количества в наши блюда (${n})</span></button>` : '';
+          })()}
         </div>
       </section>
       <section class="card">
@@ -1088,8 +1253,26 @@
     'recipe-to-shop': async (el) => {
       const r = Store.get('recipes', el.dataset.id);
       const a = analyze(r, [...pantry().map((p) => p.name), ...(route().name === 'match' ? ui.matchExtra || [] : [])]);
-      const n = await addToShopping(a.missing.map((i) => ({ name: ingLabel(i), qty: i.qty, unit: i.unit === 'по вкусу' ? '' : i.unit, note: r.title })));
+      const f = scaleOf(r);
+      const n = await addToShopping(a.missing.map((i) => ({ name: ingLabel(i), qty: U.scaleQty(i.qty, f), unit: i.unit === 'по вкусу' ? '' : i.unit, note: r.title, src: `r:${r.id}:${scaleFor[r.id] || ''}` })));
       toast(n ? `Добавлено в покупки: ${n}` : 'Всё уже есть в списке покупок');
+    },
+    'photo-clear': (el) => setFormPhoto(el.closest('form'), ''),
+    serv: (el) => {
+      const r = Store.get('recipes', el.dataset.id);
+      scaleFor[r.id] = Math.max(1, (scaleFor[r.id] || baseServings(r)) + Number(el.dataset.d));
+      refresh();
+    },
+    'seed-qty': async () => {
+      const seeds = new Map((window.SEED_RECIPES || []).map((s) => [U.norm(s[0]), s]));
+      const targets = Store.all('recipes').filter((r) => seeds.has(U.norm(r.title)) && !(r.ingredients || []).some((i) => i.qty));
+      if (!targets.length) { toast('Во всех наших блюдах количества уже есть'); return; }
+      if (!(await confirmBox(`Добавить типовые количества в ${targets.length} ${U.plural(targets.length, 'блюдо', 'блюда', 'блюд')}? Рецепты, где вы уже вписали количества сами, не изменятся.`, 'Добавить'))) return;
+      await Store.saveMany('recipes', targets.map((r) => {
+        const s = seeds.get(U.norm(r.title));
+        return { ...r, servings: r.servings || servWord(s[2]), ingredients: parseIngredients(s[3].split(';').join('\n')) };
+      }));
+      toast(`Количества добавлены: ${targets.length}`);
     },
     'recipe-import': async (el) => {
       const form = el.closest('form');
@@ -1100,7 +1283,7 @@
       try {
         const d = await Store.importRecipe(url);
         if (d.title) form.title.value = d.title;
-        if (d.image) form.image.value = d.image;
+        if (d.image) setFormPhoto(form, d.image);
         if (d.servings) form.servings.value = d.servings;
         if (d.time) form.time.value = d.time;
         if (d.ingredients && d.ingredients.length) form.ingredients.value = d.ingredients.join('\n');
@@ -1170,11 +1353,10 @@
     },
     seed: async () => {
       const existing = new Set(Store.all('recipes').map((r) => U.norm(r.title)));
-      const cat = catalog();
-      const list = (window.SEED_RECIPES || []).filter(([t]) => !existing.has(U.norm(t))).map(([title, category, ings]) => ({
-        title, category, status: 'liked', url: '', image: '', servings: '', time: '', steps: '',
-        notes: 'Из нашей таблицы «Меню недели». Ингредиенты примерные, поправьте под себя.',
-        ingredients: ings.split(';').map((s) => s.trim()).filter(Boolean).map((name) => ({ raw: name, name, qty: '', unit: '', key: U.ingKey(name, cat) })),
+      const list = (window.SEED_RECIPES || []).filter(([t]) => !existing.has(U.norm(t))).map(([title, category, servings, ings]) => ({
+        title, category, status: 'liked', url: '', image: '', servings: servWord(servings), time: '', steps: '',
+        notes: 'Из нашей таблицы «Меню недели». Состав и количества типовые, поправьте под себя.',
+        ingredients: parseIngredients(ings.split(';').join('\n')),
       }));
       if (!list.length) { toast('Все блюда из таблицы уже добавлены'); return; }
       await Store.saveMany('recipes', list);
@@ -1458,6 +1640,29 @@
       const f = el.form, exp = f.expires_on;
       if (exp.dataset.auto) exp.value = U.addMonths(f.made_on.value || U.today(), defaultShelf(f.kind.value, f.owner.value));
     }
+    if (el.dataset.price) {
+      const s = Store.get('shopping', el.dataset.price);
+      const v = el.value.trim().replace(/\s/g, '').replace('.', ',');
+      if (s && v !== String(s.price || '')) Store.save('shopping', { ...s, price: v }).catch(fail);
+    }
+    if ((el.dataset.actChange === 'photo-form' || el.dataset.actChange === 'photo-recipe') && el.files[0]) {
+      const file = el.files[0];
+      const label = el.closest('label');
+      if (label) label.classList.add('loading');
+      toast('Загружаю фото…');
+      compressImage(file)
+        .then((blob) => Store.uploadPhoto(blob))
+        .then(async (url) => {
+          if (el.dataset.actChange === 'photo-form') setFormPhoto(el.form, url);
+          else {
+            const r = Store.get('recipes', el.dataset.id);
+            await Store.save('recipes', { ...r, image: url });
+          }
+          toast('Фото добавлено');
+        })
+        .catch(fail)
+        .finally(() => { if (label) label.classList.remove('loading'); el.value = ''; });
+    }
     if (el.dataset.actChange === 'import' && el.files[0]) {
       el.files[0].text().then(async (txt) => {
         if (!(await confirmBox('Загрузить данные из копии? Совпадающие записи обновятся, остальные добавятся.', 'Загрузить'))) return;
@@ -1470,7 +1675,21 @@
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
 
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
-  Store.onChange(() => { if (!needLogin) render.keepScroll = true, render(); });
+  Store.onChange(() => { if (!needLogin) { render.keepScroll = true; render(); setTimeout(fixRecipeKeys, 0); } });
+
+  // Рецепты, добавленные через Telegram-бота, приходят без связи со справочником —
+  // связываем здесь, где есть полный справочник продуктов.
+  let fixingKeys = false;
+  async function fixRecipeKeys() {
+    if (fixingKeys || needLogin) return;
+    const list = Store.all('recipes').filter((r) => (r.ingredients || []).some((i) => !i.key && i.name));
+    if (!list.length) return;
+    fixingKeys = true;
+    try {
+      const cat = catalog();
+      await Store.saveMany('recipes', list.map((r) => ({ ...r, ingredients: r.ingredients.map((i) => (i.key || !i.name ? i : { ...i, key: U.ingKey(i.name, cat) })) })));
+    } catch (e) { console.error(e); } finally { fixingKeys = false; }
+  }
 
   // ---------- Запуск ----------
   $('#dl-places').innerHTML = PLACES.map((u) => `<option value="${u}">`).join('');
@@ -1485,6 +1704,7 @@
       needLogin = res.needLogin;
     } catch (e) { fail(e); }
     render();
+    fixRecipeKeys();
   })();
 
   window.addEventListener('beforeinstallprompt', (e) => {

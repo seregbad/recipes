@@ -247,6 +247,28 @@
     return count;
   };
 
+  // ---------- Фото блюд ----------
+  // Облако: хранилище Supabase «photos» → публичная ссылка. Локально: картинка внутри данных.
+  Store.uploadPhoto = async (blob) => {
+    if (Store.mode === 'local') {
+      return await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = () => reject(fr.error);
+        fr.readAsDataURL(blob);
+      });
+    }
+    if (!Store.online()) throw new Error('Нет интернета: фото загрузится, когда появится сеть. Попробуйте позже');
+    const path = `${U.uuid()}.jpg`;
+    const bucket = Store.client.storage.from('photos');
+    const { error } = await bucket.upload(path, blob, { contentType: blob.type || 'image/jpeg', cacheControl: '31536000' });
+    if (error) {
+      if (/bucket not found/i.test(error.message)) throw new Error('Хранилище фото не создано: выполните supabase/photos.sql (см. инструкцию)');
+      throw error;
+    }
+    return bucket.getPublicUrl(path).data.publicUrl;
+  };
+
   // ---------- Импорт рецепта по ссылке (через функцию Supabase) ----------
   Store.canImport = () => Store.mode === 'cloud';
   Store.importRecipe = async (url) => {

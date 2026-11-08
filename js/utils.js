@@ -65,6 +65,45 @@
   };
   U.fmtNum = (n) => String(n).replace('.', ',');
 
+  // Красивое округление: 0,25 · 1,5 · 12
+  U.roundNice = (n) => {
+    const r = n >= 10 ? Math.round(n) : n >= 1 ? Math.round(n * 10) / 10 : Math.round(n * 100) / 100;
+    return String(r).replace('.', ',');
+  };
+  // «1/2», «0,5», «2» → число; диапазоны и текст → NaN
+  U.qtyVal = (q) => {
+    const s = String(q || '').trim().replace(',', '.');
+    const m = s.match(/^(\d+)\s*\/\s*(\d+)$/);
+    if (m) return m[1] / m[2];
+    return /^\d+(\.\d+)?$/.test(s) ? parseFloat(s) : NaN;
+  };
+  // Пересчёт количества на другое число порций (все числа в строке, включая «2-3» и «1/2»)
+  U.scaleQty = (q, f) => {
+    if (!q || f === 1) return q;
+    return String(q).replace(/(\d+)\s*\/\s*(\d+)|\d+(?:[.,]\d+)?/g, (m, a, b) => U.roundNice((a ? a / b : parseFloat(m.replace(',', '.'))) * f));
+  };
+  // Сложение количеств: 300 г + 0,5 кг = 800 г; разные единицы — «600 г + 2 шт»
+  U.sumQty = (list) => {
+    const groups = new Map();
+    for (const { qty, unit } of list) {
+      const v = U.qtyVal(qty);
+      if (!isFinite(v)) continue;
+      const b = UNIT_BASE[unit || ''];
+      const key = b ? b[0] : 'u:' + (unit || '');
+      const g = groups.get(key) || { v: 0, unit: unit || '', base: !!b };
+      g.v += b ? v * b[1] : v;
+      groups.set(key, g);
+    }
+    const parts = [...groups.entries()].map(([key, g]) => {
+      if (!g.base) return { qty: U.roundNice(g.v), unit: g.unit };
+      const [small, big] = key === 'g' ? ['г', 'кг'] : ['мл', 'л'];
+      return g.v >= 1000 ? { qty: U.roundNice(g.v / 1000), unit: big } : { qty: U.roundNice(g.v), unit: small };
+    });
+    if (!parts.length) return { qty: '', unit: '' };
+    if (parts.length === 1) return parts[0];
+    return { qty: parts.map((p) => U.fmtQty(p.qty, p.unit)).join(' + '), unit: '' };
+  };
+
   // ---------- Нормализация и «стемминг» для сопоставления ----------
   const ENDINGS = ['ями', 'ами', 'ого', 'его', 'ому', 'ему', 'ыми', 'ими', 'ах', 'ях', 'ов', 'ев', 'ей', 'ой', 'ий', 'ый',
     'ая', 'яя', 'ое', 'ее', 'ые', 'ие', 'ую', 'юю', 'ом', 'ем', 'ам', 'ям', 'а', 'я', 'ы', 'и', 'у', 'ю', 'е', 'о', 'ь', 'й'];
@@ -137,10 +176,14 @@
   U.normUnit = (u) => {
     if (!u) return '';
     const s = u.toLowerCase().replace(/\s+/g, ' ').replace(/\.$/, '');
-    if (/^(г|гр|грамм)/.test(s)) return 'г';
-    if (/^(кг|килограмм)/.test(s)) return 'кг';
-    if (/^(мл|миллилитр)/.test(s)) return 'мл';
-    if (/^(л|литр)$|^литр/.test(s)) return 'л';
+    if (/^(г|гр|грамм[а-я]*)$/.test(s)) return 'г';
+    if (/^(кг|килограмм[а-я]*)$/.test(s)) return 'кг';
+    if (/^(мл|миллилитр[а-я]*)$/.test(s)) return 'мл';
+    if (/^(л|литр[а-я]*)$/.test(s)) return 'л';
+    if (/^головк/.test(s)) return 'головка';
+    if (/^кус/.test(s)) return 'кусок';
+    if (/^веточ/.test(s)) return 'веточка';
+    if (/^лист/.test(s)) return 'лист';
     if (/^(шт|штук)/.test(s)) return 'шт';
     if (/^(ст\.? ?л|стол)/.test(s)) return 'ст. л.';
     if (/^(ч\.? ?л|чайн)/.test(s)) return 'ч. л.';
