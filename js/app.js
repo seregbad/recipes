@@ -42,6 +42,9 @@
     clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
     users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
     jar: '<path d="M8 2h8M7 5h10M6 5h12v15a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2Z"/><path d="M6 11h12"/>',
+    flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
+    share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
+    next: '<path d="m9 18 6-6-6-6"/>',
   };
   const icon = (name, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${I[name]}</svg>`;
 
@@ -162,17 +165,24 @@
     const selStart = focusId && a.selectionStart;
     const scrollY = window.scrollY;
 
+    const st = Store.status();
+    const modeEl = $('#mode');
+    modeEl.textContent = st.mode === 'local' ? 'локально' : st.pending ? `не отправлено: ${st.pending}` : !st.online ? 'нет сети' : '';
+    modeEl.title = st.pending ? 'Изменения сохранены на телефоне и отправятся, когда появится интернет' : '';
+
     $('#tabbar').hidden = $('#topnav').hidden = $('#settings-btn').hidden = needLogin;
     if (needLogin) { main.innerHTML = viewLogin(); $('#alert').innerHTML = ''; return; }
     catalog();
     const r = route();
-    const nav = r.name === 'recipe' ? 'recipes' : r.name;
+    const nav = r.name === 'recipe' || r.name === 'cook' ? 'recipes' : r.name;
+    document.body.classList.toggle('cooking', r.name === 'cook');
+    keepAwake(r.name === 'cook');
     document.querySelectorAll('#tabbar a, #topnav a').forEach((el) => el.classList.toggle('active', el.dataset.r === nav));
     const shopCount = Store.all('shopping').filter((s) => s.status !== 'bought').length;
     document.querySelectorAll('[data-badge="shopping"]').forEach((el) => { el.textContent = shopCount || ''; el.hidden = !shopCount; });
 
     renderAlert(r.name);
-    const views = { recipes: viewRecipes, recipe: viewRecipe, menu: viewMenu, match: viewMatch, products: viewProducts, shopping: viewShopping, preserves: viewPreserves, settings: viewSettings };
+    const views = { recipes: viewRecipes, recipe: viewRecipe, cook: viewCook, menu: viewMenu, match: viewMatch, products: viewProducts, shopping: viewShopping, preserves: viewPreserves, settings: viewSettings };
     main.innerHTML = (views[r.name] || viewRecipes)(r.id);
 
     if (focusId) {
@@ -247,7 +257,7 @@
         const host = r.url ? safeHost(r.url) : '';
         return `<a class="rrow" role="row" href="#/recipe/${encodeURIComponent(r.id)}">
           <span class="thumb">${r.image ? `<img src="${esc(r.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : icon('book')}</span>
-          <span class="rtitle"><b>${esc(r.title)}</b>${host ? `<small>${esc(host)}</small>` : ''}</span>
+          <span class="rtitle"><b>${esc(r.title)}</b>${host || lastCooked(r) ? `<small>${esc([host, lastCooked(r) ? 'готовили ' + U.ago(lastCooked(r)) : ''].filter(Boolean).join(' · '))}</small>` : ''}</span>
           <span class="rcat">${esc(r.category || '')}</span>
           <span class="rhave">${a.total ? `<span class="meter"><i style="width:${pct}%"></i></span><small>${a.have} из ${a.total}</small>` : '<small>—</small>'}</span>
           <span class="rstatus">${statusBadge(r.status)}</span>
@@ -260,6 +270,11 @@
     return `<span class="badge st-${s}">${s === 'liked' ? icon('heart', 'fill') : ''}${esc(STATUS[s])}</span>`;
   };
   function safeHost(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return ''; } }
+  const lastCooked = (r) => (r.cooked && r.cooked.length ? r.cooked.reduce((m, d) => (d > m ? d : m)) : '');
+  function cookedText(r) {
+    const n = (r.cooked || []).length;
+    return n ? `готовили ${n} ${U.plural(n, 'раз', 'раза', 'раз')}, последний раз ${U.ago(lastCooked(r))}` : 'ещё не готовили';
+  }
 
   function viewRecipe(id) {
     const r = Store.get('recipes', id);
@@ -284,6 +299,11 @@
           <button class="btn ${s === 'liked' ? 'liked' : ''}" data-act="recipe-status" data-id="${esc(r.id)}" data-v="${s === 'liked' ? 'new' : 'liked'}">${icon('heart', s === 'liked' ? 'fill' : '')}<span>${s === 'liked' ? 'Понравилось' : 'Понравилось?'}</span></button>
           <button class="btn ${s === 'meh' ? 'meh' : ''}" data-act="recipe-status" data-id="${esc(r.id)}" data-v="${s === 'meh' ? 'new' : 'meh'}"><span>Не зашло</span></button>
           <span class="muted small">${s === 'new' ? 'ещё не пробовали' : ''}</span>
+        </div>
+        <div class="cook-row">
+          <a class="btn primary" href="#/cook/${encodeURIComponent(r.id)}">${icon('flame')}<span>Готовлю</span></a>
+          <button class="btn" data-act="cooked-open" data-id="${esc(r.id)}">${icon('check')}<span>Приготовили</span></button>
+          <span class="muted small">${esc(cookedText(r))}${(r.cooked || []).length ? ` · <button class="linklike" data-act="cooked-undo" data-id="${esc(r.id)}">отменить последнее</button>` : ''}</span>
         </div>
 
         <section class="card">
@@ -549,7 +569,10 @@
         <button class="icon-btn" aria-label="Удалить" data-act="shop-del" data-id="${esc(s.id)}">${icon('trash')}</button>
       </li>`;
     }).join('')}</ul>
-    <button class="btn block" data-act="shop-buy-all">${icon('check')}<span>Купили всё (${todo.length})</span></button>
+    <div class="row wrap shop-actions">
+      <button class="btn grow" data-act="shop-share">${icon('share')}<span>Отправить список</span></button>
+      <button class="btn grow" data-act="shop-buy-all">${icon('check')}<span>Купили всё (${todo.length})</span></button>
+    </div>
     ${freqHtml}`;
   }
 
@@ -684,6 +707,169 @@
   }
 
   // =====================================================================
+  // РЕЖИМ «ГОТОВЛЮ»: экран не гаснет, крупные шаги, таймеры
+  // =====================================================================
+  let cookState = { id: null, done: new Set(), step: 0 };
+  let wakeLock = null, wantAwake = false;
+  async function keepAwake(on) {
+    wantAwake = on;
+    try {
+      if (on && !wakeLock && 'wakeLock' in navigator && document.visibilityState === 'visible') {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => (wakeLock = null));
+      } else if (!on && wakeLock) {
+        const w = wakeLock; wakeLock = null; await w.release();
+      }
+    } catch (e) { /* браузер не разрешил — просто работаем дальше */ }
+  }
+  // после сворачивания браузер снимает блокировку — возвращаем
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wantAwake) keepAwake(true); });
+
+  const recipeSteps = (r) => String(r.steps || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
+
+  // «варить 20 минут», «1,5 часа», «30–40 мин»
+  function stepTimers(text) {
+    const out = [];
+    const re = /(\d+(?:[.,]\d+)?)(?:\s*[-–—]\s*(\d+(?:[.,]\d+)?))?\s*(минут[ауы]?|мин\.?|час(?:а|ов)?|ч\.?(?=\s|$|[,;)])|секунд[ауы]?|сек\.?)/gi;
+    for (const m of String(text).matchAll(re)) {
+      const n = parseFloat(m[1].replace(',', '.'));
+      const u = m[3].toLowerCase();
+      const sec = u.startsWith('с') ? n : u.startsWith('ч') ? n * 3600 : n * 60;
+      if (sec >= 10 && sec <= 12 * 3600) out.push({ sec: Math.round(sec), label: m[0].replace(/\s+/g, ' ') });
+    }
+    return out;
+  }
+
+  function viewCook(id) {
+    const r = Store.get('recipes', id);
+    if (!r) return `<a class="back" href="#/recipes">${icon('back')}Рецепты</a><div class="empty">Рецепт не найден</div>`;
+    if (cookState.id !== id) cookState = { id, done: new Set(), step: 0 };
+    const steps = recipeSteps(r);
+    const cur = Math.min(cookState.step, Math.max(steps.length - 1, 0));
+    const awakeNote = 'wakeLock' in navigator ? 'экран не погаснет' : 'на этом устройстве экран может гаснуть';
+    return `<div class="cook">
+      <div class="cook-head">
+        <a class="icon-btn" href="#/recipe/${encodeURIComponent(r.id)}" aria-label="Выйти из режима готовки">${icon('x')}</a>
+        <div><h1>${esc(r.title)}</h1><small class="muted">${awakeNote}</small></div>
+      </div>
+      ${(r.ingredients || []).length ? `<section class="cook-ings"><h2>Ингредиенты <small class="muted">нажмите, когда положили</small></h2>
+        <div class="cook-ing-list">${r.ingredients.map((i, n) => `<button class="cing ${cookState.done.has(n) ? 'done' : ''}" data-act="cook-ing" data-i="${n}">
+          <span class="dot">${icon('check')}</span><span>${esc(i.raw || [i.name, U.fmtQty(i.qty, i.unit)].filter(Boolean).join(' — '))}</span></button>`).join('')}</div></section>` : ''}
+      <section class="cook-steps">
+        ${steps.length ? steps.map((t, n) => `<div class="cstep ${n === cur ? 'cur' : ''} ${n < cur ? 'past' : ''}" data-act="cook-step" data-i="${n}">
+          <b>Шаг ${n + 1} из ${steps.length}</b><p>${esc(t)}</p>
+          ${stepTimers(t).map((tm) => `<button class="btn small timer-btn" data-act="timer-start" data-sec="${tm.sec}" data-label="${esc(`${r.title}: ${tm.label}`)}">${icon('clock')}<span>${esc(tm.label)}</span></button>`).join('')}
+        </div>`).join('') : `<div class="empty small">Шаги приготовления не записаны.${r.url ? ` <a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Открыть рецепт на сайте</a>` : ''}</div>`}
+      </section>
+      <div class="cook-nav">
+        ${steps.length > 1 ? `<button class="btn" data-act="cook-go" data-d="-1" ${cur === 0 ? 'disabled' : ''} aria-label="Предыдущий шаг">${icon('back')}</button>` : ''}
+        ${!steps.length || cur === steps.length - 1
+          ? `<button class="btn primary grow" data-act="cooked-open" data-id="${esc(r.id)}">${icon('check')}<span>Готово, приготовили</span></button>`
+          : `<button class="btn primary grow" data-act="cook-go" data-d="1"><span>Дальше</span>${icon('next')}</button>`}
+      </div>
+    </div>`;
+  }
+  function scrollToCurrentStep() {
+    const el = $('.cstep.cur');
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
+  // ---------- Таймеры (работают на любой странице) ----------
+  let timers = [];
+  let timerTick = null;
+  function fmtLeft(s) {
+    s = Math.max(0, Math.round(s));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0');
+  }
+  function beep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      [0, 0.35, 0.7].forEach((t) => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
+        g.gain.setValueAtTime(0.25, ctx.currentTime + t);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.3);
+        o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.3);
+      });
+    } catch (e) { /* без звука */ }
+    if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 300]);
+  }
+  function renderTimers() {
+    const box = $('#timers');
+    const now = Date.now();
+    timers.forEach((t) => { if (!t.rang && t.end <= now) { t.rang = true; beep(); toast(`Таймер: ${t.label}, готово!`); } });
+    box.innerHTML = timers.map((t) => `<div class="timer ${t.rang ? 'rang' : ''}">${icon('clock')}<span>${esc(t.label)}</span>
+      <b>${t.rang ? 'готово!' : fmtLeft((t.end - now) / 1000)}</b><button data-act="timer-stop" data-id="${t.id}" aria-label="Убрать таймер">${icon('x')}</button></div>`).join('');
+    if (!timers.length && timerTick) { clearInterval(timerTick); timerTick = null; }
+  }
+  function startTimer(sec, label) {
+    timers.push({ id: Date.now() + Math.random(), label, end: Date.now() + sec * 1000 });
+    if (!timerTick) timerTick = setInterval(renderTimers, 1000);
+    renderTimers();
+  }
+
+  // ---------- «Приготовили»: история + списание продуктов ----------
+  function writeOffPlan(r) {
+    const plan = [];
+    const used = new Set();
+    for (const i of r.ingredients || []) {
+      const p = pantry().find((x) => !used.has(x.id) && (U.sameIng(x.name, ingLabel(i)) || U.sameIng(x.name, i.name)));
+      if (!p) continue;
+      used.add(p.id);
+      const left = U.subtractQty(p.qty, p.unit, i.qty, i.unit);
+      if (left !== null && left > 0) plan.push({ p, mode: 'sub', left, checked: true, text: `${U.fmtQty(p.qty, p.unit)} → ${U.fmtQty(U.fmtNum(left), p.unit)}` });
+      else if (left !== null) plan.push({ p, mode: 'remove', checked: true, text: 'закончится' });
+      else plan.push({ p, mode: 'remove', checked: false, text: 'закончилось?' });
+    }
+    return plan;
+  }
+
+  function cookedForm(r) {
+    const plan = writeOffPlan(r);
+    const s = r.status || 'new';
+    return `<form class="form" data-form="cooked">
+      <div class="form-head"><h2>Приготовили: ${esc(r.title)}</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+      <input type="hidden" name="id" value="${esc(r.id)}">
+      <label>Когда<input type="date" name="date" value="${U.today()}" max="${U.today()}" required></label>
+      <fieldset class="rate"><legend>Как вам?</legend>
+        ${[['liked', '❤ Понравилось'], ['meh', 'Не зашло'], ['new', 'Пока не решили']].map(([v, l]) =>
+          `<label class="chip ${s === v ? 'on' : ''}"><input type="radio" name="status" value="${v}" ${s === v ? 'checked' : ''}>${l}</label>`).join('')}
+      </fieldset>
+      ${plan.length ? `<div class="wo"><b>Списать из «Есть дома»</b>
+        <small class="muted">Количество вычитается, где его можно посчитать. Отметьте то, что закончилось.</small>
+        ${plan.map((x) => `<label class="check"><input type="checkbox" name="wo" value="${esc(x.p.id)}" data-mode="${x.mode}" data-left="${x.mode === 'sub' ? x.left : ''}" ${x.checked ? 'checked' : ''}>
+          <span><b>${esc(x.p.name)}</b> <span class="muted">${esc(x.text)}</span></span></label>`).join('')}
+        <label class="check"><input type="checkbox" name="toshop" checked> То, что закончилось, добавить в покупки</label>
+      </div>` : `<p class="muted small">Продуктов этого рецепта в «Есть дома» нет, списывать нечего.</p>`}
+      <div class="form-actions"><button type="button" class="btn" data-act="close">Отмена</button><button class="btn primary">Сохранить</button></div>
+    </form>`;
+  }
+
+  async function saveCooked(f) {
+    const fd = new FormData(f);
+    const r = Store.get('recipes', fd.get('id'));
+    const date = fd.get('date') || U.today();
+    await Store.save('recipes', { ...r, cooked: [...(r.cooked || []), date].sort(), status: fd.get('status') || r.status || 'new' });
+    const finished = [];
+    for (const cb of f.querySelectorAll('input[name="wo"]:checked')) {
+      const p = Store.get('pantry', cb.value);
+      if (!p) continue;
+      if (cb.dataset.mode === 'sub' && parseFloat(cb.dataset.left) > 0) {
+        await Store.save('pantry', { ...p, qty: String(cb.dataset.left), updated_on: U.today() });
+      } else {
+        await Store.remove('pantry', p.id);
+        finished.push({ name: p.name, unit: p.unit });
+      }
+    }
+    let shop = 0;
+    if (finished.length && fd.get('toshop')) shop = await addToShopping(finished);
+    closeModal();
+    if (route().name === 'cook') location.hash = '#/recipe/' + encodeURIComponent(r.id);
+    toast(`Записали${finished.length ? `, закончилось: ${finished.length}` : ''}${shop ? `, в покупки: ${shop}` : ''}`);
+  }
+
+  // =====================================================================
   // МЕНЮ НЕДЕЛИ
   // =====================================================================
   const SLOTS = [['breakfast', 'Завтрак'], ['lunch', 'Обед'], ['dinner', 'Ужин']];
@@ -723,7 +909,7 @@
         <button class="btn primary" data-act="menu-shop" ${filled ? '' : 'disabled'}>${icon('cart')}<span>Продукты на неделю в покупки</span></button>
         ${filled ? `<button class="btn danger-ghost" data-act="menu-clear">${icon('trash')}<span>Очистить неделю</span></button>` : ''}
       </div>
-      <p class="muted small">«Заполнить пустое» подставляет на завтрак завтрак, на обед суп, на ужин второе с гарниром. Чаще выбираются понравившиеся блюда и те, для которых продукты уже есть дома. Повторов за неделю нет, прошедшие дни не трогаются.</p>
+      <p class="muted small">«Заполнить пустое» подставляет на завтрак завтрак, на обед суп, на ужин второе с гарниром. Чаще выбираются понравившиеся блюда, те, что давно не готовили, и те, для которых продукты уже есть дома. Повторов за неделю нет, прошедшие дни не трогаются.</p>
       <div class="week">${days.map((d, i) => {
         const day = menuDay(d);
         return `<section class="day ${d === today ? 'today' : ''} ${d < today ? 'past' : ''}">
@@ -779,7 +965,14 @@
       if (!pool.length) return null;
       let fresh = pool.filter((r) => !used.has(r.id));
       if (!fresh.length) fresh = pool;
-      const w = fresh.map((r) => { const a = analyze(r, names); return (r.status === 'liked' ? 2 : 1) * (1 + (a.total ? a.have / a.total : 0)); });
+      const w = fresh.map((r) => {
+        const a = analyze(r, names);
+        const last = lastCooked(r);
+        const since = last ? U.daysBetween(last, U.today()) : null;
+        // давно не готовили — чаще, готовили на днях — реже
+        const recency = since === null ? 1.3 : since < 4 ? 0.2 : Math.min(1 + since / 30, 3);
+        return (r.status === 'liked' ? 2 : 1) * (1 + (a.total ? a.have / a.total : 0)) * recency;
+      });
       let x = Math.random() * w.reduce((s, v) => s + v, 0);
       let chosen = fresh[fresh.length - 1];
       for (let i = 0; i < fresh.length; i++) { x -= w[i]; if (x <= 0) { chosen = fresh[i]; break; } }
@@ -920,6 +1113,51 @@
       } catch (e) { fail(e); } finally { el.disabled = false; el.classList.remove('loading'); }
     },
 
+    'cooked-open': (el) => openModal(cookedForm(Store.get('recipes', el.dataset.id))),
+    'cooked-undo': async (el) => {
+      const r = Store.get('recipes', el.dataset.id);
+      const last = lastCooked(r);
+      if (!(await confirmBox(`Убрать запись «готовили ${U.fmtDate(last)}»? Списанные продукты не вернутся, их можно добавить в «Есть дома» вручную.`, 'Убрать'))) return;
+      const cooked = [...r.cooked];
+      cooked.splice(cooked.lastIndexOf(last), 1);
+      await Store.save('recipes', { ...r, cooked });
+    },
+    'cook-ing': (el) => {
+      const n = +el.dataset.i;
+      if (cookState.done.has(n)) cookState.done.delete(n); else cookState.done.add(n);
+      el.classList.toggle('done');
+    },
+    'cook-step': (el, e) => {
+      if (e.target.closest('.timer-btn')) return;
+      cookState.step = +el.dataset.i; refresh();
+    },
+    'cook-go': (el) => {
+      const r = Store.get('recipes', cookState.id);
+      const max = recipeSteps(r).length - 1;
+      cookState.step = Math.max(0, Math.min(max, cookState.step + Number(el.dataset.d)));
+      refresh(); scrollToCurrentStep();
+    },
+    'timer-start': (el) => { startTimer(+el.dataset.sec, el.dataset.label); toast('Таймер запущен'); },
+    'timer-stop': (el) => { timers = timers.filter((t) => String(t.id) !== el.dataset.id); renderTimers(); },
+    'shop-share': async () => {
+      const todo = Store.all('shopping').filter((s) => s.status !== 'bought')
+        .sort((a, b) => catOf(a.name).localeCompare(catOf(b.name), 'ru') || a.name.localeCompare(b.name, 'ru'));
+      let text = `🛒 Купить (${todo.length})\n`, last = '';
+      for (const s of todo) {
+        const c = catOf(s.name);
+        if (c !== last) { text += `\n${c}\n`; last = c; }
+        text += `• ${s.name}${s.qty || s.unit ? ' — ' + U.fmtQty(s.qty, s.unit) : ''}\n`;
+      }
+      text = text.trim();
+      if (navigator.share) {
+        try { await navigator.share({ text }); return; } catch (e) { if (e.name === 'AbortError') return; }
+      }
+      try { await navigator.clipboard.writeText(text); toast('Список скопирован, вставьте его в мессенджер'); }
+      catch (e) {
+        openModal(`<div class="form"><div class="form-head"><h2>Список покупок</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+          <textarea rows="14" readonly>${esc(text)}</textarea><p class="muted small">Выделите текст и скопируйте.</p></div>`);
+      }
+    },
     'recipe-to-menu': (el) => {
       const r = Store.get('recipes', el.dataset.id);
       const slot = r.category === 'Завтраки' ? 'breakfast' : r.category === 'Супы' ? 'lunch' : 'dinner';
@@ -1105,6 +1343,7 @@
       location.hash = '#/recipe/' + encodeURIComponent(saved.id);
       toast('Рецепт сохранён');
     },
+    cooked: (f) => saveCooked(f),
     'menu-text': async (f) => {
       const box = f.closest('.picker');
       await addDish(box.dataset.date, box.dataset.slot, { text: f.text.value.trim() });
@@ -1244,7 +1483,6 @@
     try {
       const res = await Store.init();
       needLogin = res.needLogin;
-      $('#mode').textContent = Store.mode === 'cloud' ? '' : 'локально';
     } catch (e) { fail(e); }
     render();
   })();

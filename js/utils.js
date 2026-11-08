@@ -40,6 +40,30 @@
     return many;
   };
   U.daysWord = (n) => `${n} ${U.plural(n, 'день', 'дня', 'дней')}`;
+  // «вчера», «5 дней назад», «3 недели назад», «12 октября»
+  U.ago = (iso) => {
+    const d = U.daysBetween(iso, U.today());
+    if (d <= 0) return 'сегодня';
+    if (d === 1) return 'вчера';
+    if (d < 7) return `${U.daysWord(d)} назад`;
+    if (d < 35) { const w = Math.round(d / 7); return `${w} ${U.plural(w, 'неделю', 'недели', 'недель')} назад`; }
+    return U.fmtDate(iso);
+  };
+
+  // Количество в базовых единицах (для списания: 1,5 кг − 300 г)
+  const UNIT_BASE = { 'г': ['g', 1], 'кг': ['g', 1000], 'мл': ['ml', 1], 'л': ['ml', 1000] };
+  U.qtyNum = (q) => (/^\s*\d+(?:[.,]\d+)?\s*$/.test(String(q || '')) ? parseFloat(String(q).replace(',', '.')) : NaN);
+  // сколько останется в pantry после списания need; null — посчитать нельзя
+  U.subtractQty = (haveQty, haveUnit, needQty, needUnit) => {
+    const h = U.qtyNum(haveQty), n = U.qtyNum(needQty);
+    if (!isFinite(h) || !isFinite(n)) return null;
+    const hu = haveUnit || '', nu = needUnit || '';
+    if (hu === nu) return Math.round((h - n) * 1000) / 1000;
+    const a = UNIT_BASE[hu], b = UNIT_BASE[nu];
+    if (!a || !b || a[0] !== b[0]) return null;
+    return Math.round(((h * a[1] - n * b[1]) / a[1]) * 1000) / 1000;
+  };
+  U.fmtNum = (n) => String(n).replace('.', ',');
 
   // ---------- Нормализация и «стемминг» для сопоставления ----------
   const ENDINGS = ['ями', 'ами', 'ого', 'его', 'ому', 'ему', 'ыми', 'ими', 'ах', 'ях', 'ов', 'ев', 'ей', 'ой', 'ий', 'ый',
@@ -146,7 +170,7 @@
     return { raw, name, qty, unit };
   };
 
-  U.fmtQty = (qty, unit) => [qty, unit].filter(Boolean).join(' ');
+  U.fmtQty = (qty, unit) => [String(qty || '').replace(/^(\d+)\.(\d+)$/, '$1,$2'), unit].filter(Boolean).join(' ');
 
   // Сложение количеств одной единицы (для «Дома» после покупки)
   U.addQty = (a, b) => {
