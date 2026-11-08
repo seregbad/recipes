@@ -8,7 +8,13 @@
   const RECIPE_CATS = ['Завтраки', 'Супы', 'Основные блюда', 'Гарниры', 'Салаты', 'Закуски', 'Выпечка', 'Десерты',
     'Напитки', 'Соусы', 'Детское (Савва)', 'Заготовки', 'Другое'];
   const STATUS = { new: 'Не пробовали', liked: 'Понравилось', meh: 'Не зашло' };
-  const UNITS = ['шт', 'г', 'кг', 'мл', 'л', 'уп.', 'банка', 'пучок', 'ст. л.', 'ч. л.', 'стакан', 'порция', 'контейнер', 'пакет'];
+  const UNITS = ['шт', 'г', 'кг', 'мл', 'л', 'уп.', 'пачка', 'пакет', 'банка', 'бутылка', 'коробка', 'пучок', 'головка', 'зубчик', 'кусок', 'ст. л.', 'ч. л.', 'стакан', 'порция', 'контейнер'];
+  // выпадающий список единиц; незнакомая единица (например, из импортированного рецепта) сохраняется как вариант
+  const unitSelect = (value = '') => {
+    const v = value || '';
+    const opts = UNITS.includes(v) || !v ? UNITS : [v, ...UNITS];
+    return `<select name="unit" aria-label="Единица"><option value="">ед.</option>${opts.map((u) => `<option ${u === v ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select>`;
+  };
   const PLACES = ['Морозилка', 'Холодильник', 'Кладовка', 'Балкон'];
 
   const I = {
@@ -422,7 +428,7 @@
         <form class="add-row qty-row" data-form="pantry-add">
           <input id="p-name" name="name" list="dl-ing" placeholder="Что есть дома" required autocomplete="off">
           <input name="qty" placeholder="Кол-во" inputmode="decimal">
-          <input name="unit" list="dl-units" placeholder="ед.">
+          ${unitSelect()}
           <button class="btn primary" type="submit" aria-label="Добавить">${icon('plus')}</button>
         </form>` : `
         <label class="search">${icon('search')}<input id="prodq" type="search" placeholder="Найти в справочнике" value="${esc(ui.prodQ)}" data-input="prodQ"></label>`}
@@ -508,7 +514,7 @@
         <form class="add-row qty-row" data-form="shop-add">
           <input id="s-name" name="name" list="dl-ing" placeholder="Что купить" required autocomplete="off">
           <input name="qty" placeholder="Кол-во" inputmode="decimal">
-          <input name="unit" list="dl-units" placeholder="ед.">
+          ${unitSelect()}
           <button class="btn primary" type="submit" aria-label="Добавить">${icon('plus')}</button>
         </form>
         <div id="list">${shopTodo()}</div>` : `
@@ -571,7 +577,7 @@
       <label>Продукт<input name="name" list="dl-ing" required value="${esc(s.name)}"></label>
       <div class="grid2">
         <label>Количество<input name="qty" inputmode="decimal" value="${esc(s.qty || '')}"></label>
-        <label>Единица<input name="unit" list="dl-units" value="${esc(s.unit || '')}"></label>
+        <label>Единица${unitSelect(s.unit)}</label>
         ${bought ? `<label>Дата покупки<input name="bought_on" type="date" value="${esc(s.bought_on || '')}"></label>
         <label>Цена, ₽<input name="price" inputmode="decimal" value="${esc(s.price || '')}"></label>` : ''}
       </div>
@@ -668,7 +674,7 @@
       <div class="presets"><small class="muted">Срок хранения:</small>${SHELF_PRESETS.map(([l, d, m]) => `<button type="button" class="chip" data-act="shelf" data-d="${d}" data-m="${m}">${l}</button>`).join('')}</div>
       <div class="grid3">
         <label>Количество<input name="qty" inputmode="decimal" value="${esc(p.qty || '')}"></label>
-        <label>Единица<input name="unit" list="dl-units" value="${esc(p.unit || '')}"></label>
+        <label>Единица${unitSelect(p.unit)}</label>
         <label>Где лежит<input name="place" list="dl-places" value="${esc(p.place || '')}"></label>
       </div>
       <label>Заметка<input name="notes" value="${esc(p.notes || '')}" placeholder="состав, с какого возраста, как разогревать…"></label>
@@ -982,7 +988,7 @@
         <input type="hidden" name="id" value="${esc(p.id)}">
         <label>Продукт<input name="name" list="dl-ing" required value="${esc(p.name)}"></label>
         <div class="grid2"><label>Количество<input name="qty" inputmode="decimal" value="${esc(p.qty || '')}" autofocus></label>
-        <label>Единица<input name="unit" list="dl-units" value="${esc(p.unit || '')}"></label></div>
+        <label>Единица${unitSelect(p.unit)}</label></div>
         <div class="form-actions"><button type="button" class="btn" data-act="close">Отмена</button><button class="btn primary">Сохранить</button></div></form>`);
     },
     'pantry-out': async (el) => {
@@ -1228,7 +1234,6 @@
   Store.onChange(() => { if (!needLogin) render.keepScroll = true, render(); });
 
   // ---------- Запуск ----------
-  $('#dl-units').innerHTML = UNITS.map((u) => `<option value="${u}">`).join('');
   $('#dl-places').innerHTML = PLACES.map((u) => `<option value="${u}">`).join('');
   document.querySelectorAll('[data-nav]').forEach((navEl) => {
     navEl.innerHTML = NAV.map((n) => `<a href="#/${n.r}" data-r="${n.r}">${icon(n.ic)}<span>${n.label}</span>${n.r === 'shopping' ? '<i class="nbadge" data-badge="shopping" hidden></i>' : ''}</a>`).join('');
