@@ -164,8 +164,14 @@ input[type="checkbox"] { width: 18px; min-height: 0; height: 18px; accent-color:
 .dot-warn { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
 
 .add-row { margin-bottom: 14px; }
-.qty-row { display: grid; grid-template-columns: 1fr 78px 70px 44px; gap: 6px; }
+.qty-row { display: grid; grid-template-columns: 1fr 1fr 44px; gap: 6px; }
+.qty-row > input[name="name"] { grid-column: 1 / -1; }
 .qty-row .btn { padding: 0; }
+@media (min-width: 560px) {
+  .qty-row { grid-template-columns: 1fr 96px 130px 44px; }
+  .qty-row > input[name="name"] { grid-column: auto; }
+}
+select[name="unit"] { padding-right: 6px; }
 
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 12px 0; box-shadow: var(--shadow); }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
