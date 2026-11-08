@@ -345,6 +345,60 @@ details.cat[open] > .clist { border-radius: 0 0 var(--radius) var(--radius); }
 .pick-item:hover { border-color: var(--accent); }
 .pick-item small { display: block; color: var(--muted); font-size: .8rem; }
 
+/* ---------- «Приготовили» и режим «готовлю» ---------- */
+.cook-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.linklike { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
+.btn.grow { flex: 1; }
+.shop-actions { margin-top: 12px; }
+fieldset.rate { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+fieldset.rate legend { font-size: .88rem; font-weight: 600; margin-bottom: 6px; padding: 0; }
+.form fieldset.rate label.chip { flex-direction: row; font-weight: 500; }
+fieldset.rate input { position: absolute; opacity: 0; pointer-events: none; }
+fieldset.rate label:has(input:checked) { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); font-weight: 600; }
+.wo { display: flex; flex-direction: column; gap: 2px; background: var(--surface-2); border-radius: 12px; padding: 12px; }
+.wo .check { color: var(--text); margin: 6px 0 0; font-size: .92rem; }
+.form .wo label { flex-direction: row; font-weight: 400; }
+
+body.cooking .topbar, body.cooking .tabbar, body.cooking #alert { display: none !important; }
+body.cooking { padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
+.cook { padding-top: env(safe-area-inset-top); }
+.cook-head { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0 12px; }
+.cook-head h1 { font-size: 1.35rem; }
+.cook h2 { font-size: 1rem; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.cook h2 small { font-weight: 400; font-size: .8rem; }
+.cook-ing-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; }
+.cing {
+  display: flex; gap: 12px; align-items: center; text-align: left; border: 1px solid var(--line); background: var(--surface);
+  color: var(--text); font: inherit; font-size: 1.1rem; padding: 12px 14px; border-radius: 12px; cursor: pointer;
+}
+.cing .dot { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; flex: none; color: transparent; }
+.cing .dot .ic { width: 15px; height: 15px; stroke-width: 3; }
+.cing.done { color: var(--muted); text-decoration: line-through; background: var(--surface-2); }
+.cing.done .dot { background: var(--ok); border-color: var(--ok); color: #fff; }
+.cook-steps { display: flex; flex-direction: column; gap: 10px; }
+.cstep { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; cursor: pointer; transition: .15s; }
+.cstep b { font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.cstep p { margin: 6px 0 0; font-size: 1.15rem; line-height: 1.5; }
+.cstep.cur { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.cstep.cur p { font-size: 1.3rem; }
+.cstep.past { opacity: .5; }
+.timer-btn { margin-top: 10px; margin-right: 6px; }
+.cook-nav {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; display: flex; gap: 8px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--line);
+}
+.cook-nav .btn { min-height: 54px; font-size: 1.05rem; }
+@media (min-width: 900px) { .cook-nav { left: 50%; transform: translateX(-50%); max-width: 980px; border: 1px solid var(--line); border-radius: 16px 16px 0 0; } }
+
+#timers:empty { display: none; }
+#timers { position: sticky; top: 0; z-index: 30; display: flex; flex-direction: column; gap: 4px; padding: 6px 16px; max-width: 980px; margin: 0 auto; }
+.timer { display: flex; align-items: center; gap: 8px; background: var(--text); color: var(--bg); border-radius: 12px; padding: 8px 8px 8px 12px; font-size: .9rem; }
+.timer span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timer b { font-variant-numeric: tabular-nums; font-size: 1.1rem; }
+.timer button { border: 0; background: none; color: inherit; display: grid; padding: 4px; cursor: pointer; }
+.timer.rang { background: var(--accent); color: var(--accent-ink); animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .75; } }
+
 /* ---------- Модальные окна ---------- */
 dialog#modal {
   width: min(640px, 100vw); max-height: min(92vh, 100dvh); padding: 0; border: 0; border-radius: 18px;
