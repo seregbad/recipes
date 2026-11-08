@@ -112,6 +112,21 @@
     await Store.flush();
     await Store.loadCloud();
   }
+
+  // Синхронизация по кнопке: отправить накопленное и перечитать базу прямо сейчас.
+  // Возвращает число отправленных изменений; при проблеме бросает понятную ошибку.
+  Store.lastSync = readJSON('nasha-kuhnya:last-sync') || '';
+  Store.syncNow = async () => {
+    if (Store.mode !== 'cloud') return 0;
+    if (!Store.session) throw new Error('Сначала войдите');
+    const before = Store.pending.length;
+    await Store.flush();
+    if (Store.pending.length) throw new Error(`Нет связи с базой: не отправлено ${Store.pending.length}. Изменения сохранены на телефоне, попробуйте позже`);
+    try { await Store.loadCloud(); } catch (e) {
+      throw new Error(isNetErr(e) ? 'Нет связи с базой. Проверьте интернет и попробуйте ещё раз' : e.message || String(e));
+    }
+    return before;
+  };
   const syncQuiet = () => sync().catch((e) => { if (!isNetErr(e)) console.error(e); });
 
   // ---------- Инициализация ----------
@@ -166,6 +181,8 @@
     setAll(obj);
     applyPending();
     writeJSON(CACHE_KEY, Store.data);
+    Store.lastSync = new Date().toISOString();
+    writeJSON('nasha-kuhnya:last-sync', Store.lastSync);
     emit();
   };
 

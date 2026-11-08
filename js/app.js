@@ -169,8 +169,11 @@
 
     const st = Store.status();
     const modeEl = $('#mode');
-    modeEl.textContent = st.mode === 'local' ? 'локально' : st.pending ? `не отправлено: ${st.pending}` : !st.online ? 'нет сети' : '';
-    modeEl.title = st.pending ? 'Изменения сохранены на телефоне и отправятся, когда появится интернет' : '';
+    const modeText = st.mode === 'local' ? 'локально' : st.pending ? `не отправлено: ${st.pending} ↻` : !st.online ? 'нет сети ↻' : '';
+    if (!modeEl.classList.contains('busy')) modeEl.textContent = modeText;
+    modeEl.hidden = !modeText || needLogin;
+    modeEl.classList.toggle('local', st.mode === 'local');
+    modeEl.title = st.mode === 'local' ? '' : 'Нажмите, чтобы отправить изменения и обновить данные сейчас';
 
     $('#tabbar').hidden = $('#topnav').hidden = $('#settings-btn').hidden = needLogin;
     if (needLogin) { main.innerHTML = viewLogin(); $('#alert').innerHTML = ''; return; }
@@ -193,6 +196,7 @@
     }
     if (render.keepScroll) window.scrollTo(0, scrollY);
     render.keepScroll = false;
+    if (sug.input && !document.contains(sug.input)) hideSuggest();
   }
   // перерисовка без прыжка страницы (после действий на той же странице)
   const refresh = () => { render.keepScroll = true; render(); };
@@ -448,7 +452,7 @@
         ? `Учитываем продукты из раздела <a href="#/products">«Дома»</a> (${home.length}) и добавленные ниже. Сверху рецепты, для которых меньше всего нужно докупить.`
         : 'Выберите продукты, которые хотите использовать (например, кабачок, который скоро испортится), и увидите рецепты, где они есть.'}</p>
       <form class="row add-row" data-form="match-add">
-        <input id="m-add" name="name" list="dl-ing" placeholder="${modeHome ? 'Добавить продукт к имеющимся' : 'Выберите продукт'}" autocomplete="off">
+        <input id="m-add" name="name" data-suggest placeholder="${modeHome ? 'Добавить продукт к имеющимся' : 'Выберите продукт'}" autocomplete="off">
         <button class="btn" type="submit">${icon('plus')}<span>Добавить</span></button>
       </form>
       <div class="chips">
@@ -503,7 +507,7 @@
       </div>
       ${ui.prodTab === 'home' ? `
         <form class="add-row qty-row" data-form="pantry-add">
-          <input id="p-name" name="name" list="dl-ing" placeholder="Что есть дома" required autocomplete="off">
+          <input id="p-name" name="name" data-suggest placeholder="Что есть дома" required autocomplete="off">
           <input name="qty" placeholder="Кол-во" inputmode="decimal">
           ${unitSelect()}
           <button class="btn primary" type="submit" aria-label="Добавить">${icon('plus')}</button>
@@ -555,6 +559,26 @@
             </span></li>`;
         }).join('')}</ul>
       </details>`).join('') + addCustom;
+  }
+
+  // Окно «сколько?» при добавлении из справочника
+  function openQtyDialog(name, target) {
+    const n = U.norm(name);
+    const home = pantry().find((p) => U.norm(p.name) === n);
+    const inShop = Store.all('shopping').find((s) => s.status !== 'bought' && U.norm(s.name) === n);
+    // единица по умолчанию — как в прошлый раз
+    const last = [home, ...Store.all('shopping').filter((s) => U.norm(s.name) === n).reverse()].find((x) => x && x.unit);
+    const have = target === 'home' ? home : inShop;
+    openModal(`<form class="form" data-form="cat-qty">
+      <div class="form-head"><h2>${target === 'home' ? 'Есть дома' : 'Купить'}: ${esc(name)}</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+      <input type="hidden" name="name" value="${esc(name)}"><input type="hidden" name="target" value="${target}">
+      ${have ? `<p class="muted small">${target === 'home' ? 'Уже дома' : 'Уже в списке'}${have.qty || have.unit ? ': ' + esc(U.fmtQty(have.qty, have.unit)) : ''}. Количество прибавится.</p>` : ''}
+      <div class="grid2">
+        <label>Количество<input name="qty" inputmode="decimal" placeholder="можно не указывать" autofocus></label>
+        <label>Единица${unitSelect(last ? last.unit : '')}</label>
+      </div>
+      <div class="form-actions"><button type="button" class="btn" data-act="close">Отмена</button><button class="btn primary">Добавить</button></div>
+    </form>`);
   }
 
   async function addToPantry(name, qty, unit) {
@@ -617,7 +641,7 @@
       </div>
       ${ui.shopTab === 'money' ? `<div id="list">${expensesView()}</div>` : ui.shopTab === 'todo' ? `
         <form class="add-row qty-row" data-form="shop-add">
-          <input id="s-name" name="name" list="dl-ing" placeholder="Что купить" required autocomplete="off">
+          <input id="s-name" name="name" data-suggest placeholder="Что купить" required autocomplete="off">
           <input name="qty" placeholder="Кол-во" inputmode="decimal">
           ${unitSelect()}
           <button class="btn primary" type="submit" aria-label="Добавить">${icon('plus')}</button>
@@ -747,7 +771,7 @@
     return `<form class="form" data-form="shop-edit">
       <div class="form-head"><h2>${bought ? 'Покупка' : 'Купить'}</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
       <input type="hidden" name="id" value="${esc(s.id)}">
-      <label>Продукт<input name="name" list="dl-ing" required value="${esc(s.name)}"></label>
+      <label>Продукт<input name="name" data-suggest required value="${esc(s.name)}"></label>
       <div class="grid2">
         <label>Количество<input name="qty" inputmode="decimal" value="${esc(s.qty || '')}"></label>
         <label>Единица${unitSelect(s.unit)}</label>
@@ -1181,7 +1205,11 @@
         <h2>Где хранятся данные</h2>
         ${cloud
           ? `<p>${icon('check')} Общая база Supabase: изменения сразу видны вам обоим.<br><span class="muted small">Вы вошли как ${esc(Store.userEmail())}</span></p>
-             <button class="btn" data-act="logout">Выйти</button>`
+             <p class="small">${Store.status().pending ? `<b>Не отправлено: ${Store.status().pending}</b>` : 'Все изменения отправлены'}${Store.lastSync ? ` · данные обновлены ${esc(U.ago(U.toISODate(new Date(Store.lastSync))))} в ${new Date(Store.lastSync).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}` : ''}${!Store.status().online ? ' · <b>нет сети</b>' : ''}</p>
+             <div class="row wrap">
+               <button class="btn primary" data-act="sync">${icon('repeat')}<span>Синхронизировать сейчас</span></button>
+               <button class="btn" data-act="logout">Выйти</button>
+             </div>`
           : `<p><b>Локально, только в этом браузере.</b> Чтобы пользоваться вдвоём с телефонов, подключите Supabase по инструкции (файл <code>ИНСТРУКЦИЯ.md</code>). Данные отсюда можно будет перенести: сохраните копию ниже и загрузите её после подключения.</p>`}
       </section>
       <section class="card">
@@ -1406,7 +1434,7 @@
       openModal(`<form class="form" data-form="pantry-edit">
         <div class="form-head"><h2>Есть дома</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
         <input type="hidden" name="id" value="${esc(p.id)}">
-        <label>Продукт<input name="name" list="dl-ing" required value="${esc(p.name)}"></label>
+        <label>Продукт<input name="name" data-suggest required value="${esc(p.name)}"></label>
         <div class="grid2"><label>Количество<input name="qty" inputmode="decimal" value="${esc(p.qty || '')}" autofocus></label>
         <label>Единица${unitSelect(p.unit)}</label></div>
         <div class="form-actions"><button type="button" class="btn" data-act="close">Отмена</button><button class="btn primary">Сохранить</button></div></form>`);
@@ -1418,8 +1446,19 @@
       toast(`«${p.name}» закончилось, добавлено в покупки`);
     },
     'pantry-del': async (el) => { await Store.remove('pantry', el.dataset.id); },
-    'cat-home': async (el) => { await addToPantry(el.dataset.n, '', ''); toast(`«${el.dataset.n}»: есть дома`); },
-    'cat-shop': async (el) => { await addToShopping([{ name: el.dataset.n }]); toast(`«${el.dataset.n}» в покупках`); },
+    'cat-home': (el) => openQtyDialog(el.dataset.n, 'home'),
+    'cat-shop': (el) => openQtyDialog(el.dataset.n, 'shop'),
+    sync: async (el) => {
+      if (Store.mode !== 'cloud') return;
+      const badge = $('#mode');
+      badge.classList.add('busy'); badge.textContent = 'синхронизация…';
+      if (el !== badge) el.disabled = true;
+      try {
+        const n = await Store.syncNow();
+        toast(n ? `Отправлено изменений: ${n}. Данные обновлены` : 'Данные обновлены');
+      } catch (e) { toast(e.message || String(e), 'err'); }
+      finally { badge.classList.remove('busy'); el.disabled = false; refresh(); }
+    },
     'custom-del': async (el) => {
       const c = Store.get('custom_ingredients', el.dataset.id);
       if (await confirmBox(`Удалить «${c.name}» из справочника?`)) await Store.remove('custom_ingredients', c.id);
@@ -1526,6 +1565,14 @@
       toast('Рецепт сохранён');
     },
     cooked: (f) => saveCooked(f),
+    'cat-qty': async (f) => {
+      const fd = Object.fromEntries(new FormData(f));
+      const qty = fd.qty.trim().replace('.', ',');
+      if (fd.target === 'home') await addToPantry(fd.name, qty, fd.unit);
+      else await addToShopping([{ name: fd.name, qty, unit: fd.unit }]);
+      closeModal();
+      toast(`«${fd.name}»${qty ? ' ' + U.fmtQty(qty, fd.unit) : ''}: ${fd.target === 'home' ? 'есть дома' : 'в покупках'}`);
+    },
     'menu-text': async (f) => {
       const box = f.closest('.picker');
       await addDish(box.dataset.date, box.dataset.slot, { text: f.text.value.trim() });
@@ -1671,6 +1718,88 @@
       }).catch(fail).finally(() => (el.value = ''));
     }
   });
+  // ---------- Подсказки из справочника при вводе продукта (поля с data-suggest) ----------
+  // Свой список вместо <datalist>: на телефонах datalist показывается плохо или не показывается.
+  const sug = { box: null, input: null, items: [], idx: -1 };
+  function suggestFor(q) {
+    const n = U.norm(q);
+    if (!n) return [];
+    const scored = [];
+    for (const c of catalog()) {
+      const cn = U.norm(c.name);
+      let s = -1;
+      if (cn.startsWith(n)) s = 0;                                  // «майо» → майонез
+      else if (cn.split(/[\s-]+/).some((w) => w.startsWith(n))) s = 1; // «сливоч» → масло сливочное
+      else if (cn.includes(n)) s = 2;
+      if (s >= 0) scored.push({ c, s, len: cn.length });
+    }
+    return scored.sort((a, b) => a.s - b.s || a.len - b.len).slice(0, 8).map((x) => x.c);
+  }
+  function markMatch(name, q) {
+    const i = U.norm(name).indexOf(U.norm(q));
+    if (i < 0 || !q) return esc(name);
+    return esc(name.slice(0, i)) + '<mark>' + esc(name.slice(i, i + q.length)) + '</mark>' + esc(name.slice(i + q.length));
+  }
+  function hideSuggest() {
+    if (sug.box) sug.box.remove();
+    sug.box = null; sug.input = null; sug.items = []; sug.idx = -1;
+  }
+  function placeSuggest() {
+    if (!sug.box || !sug.input) return;
+    if (!document.contains(sug.input)) { hideSuggest(); return; }
+    const r = sug.input.getBoundingClientRect();
+    Object.assign(sug.box.style, { left: r.left + 'px', top: r.bottom + 4 + 'px', width: Math.max(r.width, 220) + 'px' });
+  }
+  function showSuggest(input) {
+    const items = suggestFor(input.value);
+    if (!items.length || (items.length === 1 && U.norm(items[0].name) === U.norm(input.value))) { hideSuggest(); return; }
+    if (sug.input !== input) { hideSuggest(); sug.input = input; }
+    sug.items = items;
+    sug.idx = Math.min(sug.idx, items.length - 1);
+    if (!sug.box) {
+      sug.box = document.createElement('div');
+      sug.box.className = 'suggest';
+      sug.box.setAttribute('role', 'listbox');
+      sug.box.addEventListener('pointerdown', (e) => e.preventDefault()); // не терять фокус поля
+      sug.box.addEventListener('click', (e) => { const b = e.target.closest('[data-i]'); if (b) pickSuggest(+b.dataset.i); });
+      (input.closest('dialog') || document.body).appendChild(sug.box);
+    }
+    const homeMap = new Map(pantry().map((p) => [U.norm(p.name), p]));
+    sug.box.innerHTML = items.map((c, i) => {
+      const h = homeMap.get(U.norm(c.name));
+      return `<button type="button" role="option" data-i="${i}" class="${i === sug.idx ? 'on' : ''}">
+        <span>${markMatch(c.name, input.value.trim())}</span><small>${esc(c.cat)}${h ? ' · дома' + (h.qty || h.unit ? ': ' + esc(U.fmtQty(h.qty, h.unit)) : '') : ''}</small></button>`;
+    }).join('');
+    placeSuggest();
+  }
+  function pickSuggest(i) {
+    const input = sug.input, c = sug.items[i];
+    if (!input || !c) return;
+    input.value = c.name;
+    hideSuggest();
+    // курсор сразу в количество, если оно есть рядом
+    const next = input.form && input.form.elements.qty;
+    if (next) next.focus(); else input.focus();
+  }
+  document.addEventListener('input', (e) => { if (e.target.hasAttribute && e.target.hasAttribute('data-suggest')) showSuggest(e.target); });
+  document.addEventListener('focusin', (e) => { if (e.target.hasAttribute && e.target.hasAttribute('data-suggest') && e.target.value) showSuggest(e.target); });
+  document.addEventListener('focusout', (e) => { if (e.target === sug.input) setTimeout(() => { if (document.activeElement !== sug.input) hideSuggest(); }, 200); });
+  document.addEventListener('keydown', (e) => {
+    if (!sug.box || e.target !== sug.input) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = sug.items.length;
+      if (e.key === 'ArrowDown') sug.idx = sug.idx + 1 >= n ? -1 : sug.idx + 1;
+      else sug.idx = sug.idx - 1 < -1 ? n - 1 : sug.idx - 1;
+      showSuggest(sug.input);
+    } else if (e.key === 'Enter' && sug.idx >= 0) {
+      e.preventDefault(); pickSuggest(sug.idx);
+    } else if (e.key === 'Escape') hideSuggest();
+  });
+  window.addEventListener('scroll', placeSuggest, true);
+  window.addEventListener('resize', placeSuggest);
+  $('#modal').addEventListener('close', hideSuggest);
+
   // клик по фону закрывает окно
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
 
