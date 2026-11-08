@@ -67,8 +67,15 @@ code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--line);
 }
 .brand { display: flex; align-items: center; gap: 8px; color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.1rem; margin-right: auto; }
-.brand small { font-weight: 500; font-size: .72rem; color: var(--warn); background: var(--warn-soft); padding: 1px 7px; border-radius: 99px; }
-.brand small:empty { display: none; }
+.brand { margin-right: 0; }
+#settings-btn { margin-left: auto; }
+@media (min-width: 900px) { #topnav { margin-left: auto; } #settings-btn { margin-left: 0; } }
+.mode {
+  border: 0; font: inherit; font-weight: 600; font-size: .72rem; color: var(--warn); background: var(--warn-soft);
+  padding: 3px 9px; border-radius: 99px; cursor: pointer; white-space: nowrap;
+}
+.mode.local { cursor: default; }
+.mode.busy { opacity: .6; pointer-events: none; }
 #topnav { display: none; }
 #topnav a, .tabbar a {
   position: relative; display: flex; align-items: center; gap: 6px; color: var(--muted); text-decoration: none; font-weight: 600; font-size: .92rem;
@@ -444,6 +451,19 @@ label.btn.loading { opacity: .6; pointer-events: none; }
 .hbars b, .toplist b { font-size: .88rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .toplist li { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px dashed var(--line); font-size: .92rem; }
 .toplist li:first-child { border-top: 0; }
+
+/* ---------- Подсказки при вводе продукта ---------- */
+.suggest {
+  position: fixed; z-index: 1000; max-height: 46vh; overflow-y: auto; background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, .18); padding: 4px;
+}
+.suggest button {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 8px 10px;
+  border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.suggest button:hover, .suggest button.on { background: var(--accent-soft); }
+.suggest small { color: var(--muted); font-size: .76rem; text-align: right; flex: none; max-width: 50%; }
+.suggest mark { background: none; color: var(--accent); font-weight: 700; }
 
 /* ---------- Модальные окна ---------- */
 dialog#modal {
