@@ -452,6 +452,37 @@ label.btn.loading { opacity: .6; pointer-events: none; }
 .toplist li { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px dashed var(--line); font-size: .92rem; }
 .toplist li:first-child { border-top: 0; }
 
+/* ---------- Чеки ---------- */
+.progress { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width .3s; }
+.warn-text { color: var(--warn); }
+.ok-text { color: var(--ok); }
+.form-actions.wrap { flex-wrap: wrap; }
+.form-actions.wrap > :first-child:not(:last-child) { margin-right: auto; }
+.rc-head, .rc-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) 128px 76px 36px; gap: 6px; align-items: start; }
+.rc-head { font-size: .72rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+.rc-rows { display: flex; flex-direction: column; gap: 8px; }
+.rc-row input, .rc-row select { min-height: 38px; padding: 6px 8px; font-size: 15px; }
+.rc-row input[type="checkbox"] { margin-top: 10px; }
+.rc-row .icon-btn { width: 36px; height: 38px; }
+.rc-row.off { opacity: .45; }
+.rc-name small { display: block; color: var(--muted); font-size: .72rem; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-qty { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.rc-qty select { padding: 6px 2px; }
+.rc-price { text-align: right; }
+@media (max-width: 520px) {
+  .rc-head { display: none; }
+  .rc-row { grid-template-columns: 22px minmax(0, 1fr) 76px 36px; grid-template-areas: "c n n d" ". q p ."; padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
+  .rc-row > input[type="checkbox"] { grid-area: c; }
+  .rc-row > .rc-name { grid-area: n; }
+  .rc-row > .rc-qty { grid-area: q; }
+  .rc-row > .rc-price { grid-area: p; }
+  .rc-row > .icon-btn { grid-area: d; }
+}
+.rc-sum { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; font-size: .92rem; display: flex; flex-direction: column; gap: 4px; }
+.rc-raw summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+.rc-raw textarea { margin-top: 6px; font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+
 /* ---------- Подсказки при вводе продукта ---------- */
 .suggest {
   position: fixed; z-index: 1000; max-height: 46vh; overflow-y: auto; background: var(--surface); color: var(--text);
