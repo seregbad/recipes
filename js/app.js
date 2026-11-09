@@ -633,7 +633,8 @@
     const all = Store.all('shopping');
     const todo = all.filter((s) => s.status !== 'bought');
     return `
-      <div class="page-head"><h1>Покупки</h1></div>
+      <div class="page-head"><h1>Покупки</h1>
+        <label class="btn">${icon('camera')}<span>Чек</span><input type="file" accept="image/*" multiple data-act-change="receipt" hidden></label></div>
       <div class="seg">
         <button class="${ui.shopTab === 'todo' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="todo">Купить · ${todo.length}</button>
         <button class="${ui.shopTab === 'history' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="history">История</button>
@@ -654,7 +655,7 @@
   function frequent() {
     const todo = new Set(Store.all('shopping').filter((s) => s.status !== 'bought').map((s) => U.norm(s.name)));
     const freq = {};
-    Store.all('shopping').filter((s) => s.status === 'bought').forEach((s) => {
+    Store.all('shopping').filter((s) => s.status === 'bought' && !s.lump).forEach((s) => {
       const n = U.norm(s.name);
       if (!todo.has(n)) freq[n] = freq[n] || { name: s.name, unit: s.unit, qty: s.qty, c: 0 }, freq[n].c++;
     });
@@ -705,6 +706,155 @@
     }).join('');
   }
 
+  // ---------- Чеки: фото → QR + распознавание → проверка → покупки ----------
+  let receiptDraft = null, receiptScanId = 0;
+  const num2 = (v) => { const n = parseFloat(String(v || '').replace(/\s/g, '').replace(',', '.')); return isFinite(n) ? n : 0; };
+  const money = (n) => (Math.round(n * 100) / 100).toFixed(2).replace('.', ',');
+
+  // «ХЛЕБ БОРОДИНСКИЙ 400Г» → «хлеб бородинский»: без фасовки, процентов и сортов
+  const productName = (s) => String(s || '').toLowerCase()
+    .replace(/\d+(?:[.,]\d+)?\s*(?:г|гр|кг|мл|л|шт|%)\.?(?![а-яё])/g, ' ')
+    .replace(/(?:^|\s)с[0о1-3](?![а-яё])/g, ' ')
+    .replace(/[^а-яёa-z0-9\s-]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  async function openReceiptScan(files) {
+    const id = ++receiptScanId;
+    const setStage = (text, p) => {
+      if (id !== receiptScanId || !$('#modal').open) return;
+      const t = $('#rc-stage'), bar = $('#rc-bar');
+      if (t) t.textContent = text;
+      if (bar) bar.style.width = Math.round((p || 0) * 100) + '%';
+    };
+    openModal(`<div class="form">
+      <div class="form-head"><h2>Читаю чек…</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+      <p id="rc-stage">Открываю фото…</p>
+      <div class="progress"><i id="rc-bar"></i></div>
+      <p class="muted small">Всё распознаётся прямо в телефоне. В первый раз загрузится словарь (около 4 МБ), дальше быстрее и без интернета. Обычно 5–20 секунд.</p>
+    </div>`);
+    try {
+      const res = await Receipt.scan(files, ({ stage, p }) => {
+        if (stage === 'qr') setStage('Ищу QR-код…', 0.05);
+        else if (stage === 'prep') setStage('Готовлю фото…', 0.1);
+        else if (stage === 'load') setStage('Загружаю распознавание…', 0.1 + p * 0.2);
+        else if (stage === 'ocr') setStage(`Распознаю текст… ${Math.round(p * 100)}%`, 0.3 + p * 0.7);
+      });
+      if (id !== receiptScanId || !$('#modal').open) return; // окно закрыли — результат не нужен
+      const cat = catalog();
+      receiptDraft = {
+        qr: res.qr, text: res.text, ocrTotal: res.ocrTotal,
+        items: res.items.map((it) => {
+          const key = U.ingKey(it.name, cat);
+          const known = cat.some((c) => c.name === key);
+          return { name: known ? key : productName(it.name), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true };
+        }),
+      };
+      openModal(receiptForm(receiptDraft));
+    } catch (e) {
+      if (id === receiptScanId) { closeModal(); fail(e); }
+    }
+  }
+
+  function receiptForm(d) {
+    const qr = d.qr;
+    const date = d.date || (qr && qr.date) || U.today();
+    const lastShop = (Store.all('shopping').filter((s) => s.shop).sort((a, b) => String(b.bought_on).localeCompare(String(a.bought_on)))[0] || {}).shop || '';
+    const shops = [...new Set(['Пловдив', ...Store.all('shopping').map((s) => s.shop).filter(Boolean)])];
+    return `<form class="form receipt" data-form="receipt">
+      <div class="form-head"><h2>Проверьте чек</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+      <p class="small ${qr ? '' : 'warn-text'}">${qr
+        ? `${icon('check', 'tiny')} QR-код: ${esc(U.fmtDate(qr.date))}, ${esc(qr.time)} · <b>${money(qr.sum)} ₽</b>${qr.refund ? ' · <b>возврат</b>' : ''}`
+        : 'QR-код не нашёлся: проверьте дату. Сумму считаю по позициям.'}</p>
+      <div class="grid2">
+        <label>Дата покупки<input type="date" name="date" value="${esc(date)}" max="${U.today()}" required></label>
+        <label>Магазин<input name="shop" list="dl-shops" value="${esc(d.shop != null ? d.shop : lastShop)}" placeholder="необязательно"></label>
+      </div>
+      <datalist id="dl-shops">${shops.map((s) => `<option value="${esc(s)}">`).join('')}</datalist>
+      ${d.items.length ? `<div class="rc-head"><span></span><span>Продукт</span><span>Кол-во</span><span>₽</span><span></span></div>
+      <div class="rc-rows">${d.items.map((it, i) => `<div class="rc-row ${it.on ? '' : 'off'}" data-i="${i}">
+        <input type="checkbox" name="on" ${it.on ? 'checked' : ''} aria-label="Учитывать">
+        <div class="rc-name"><input name="n" data-suggest value="${esc(it.name)}" aria-label="Продукт">${it.orig && U.norm(it.orig) !== U.norm(it.name) ? `<small>${esc(it.orig)}</small>` : ''}</div>
+        <div class="rc-qty"><input name="q" inputmode="decimal" value="${esc(it.qty)}" aria-label="Количество">${unitSelect(it.unit)}</div>
+        <input name="p" class="rc-price" inputmode="decimal" value="${esc(money(it.total))}" aria-label="Сумма, ₽">
+        <button type="button" class="icon-btn" data-act="rc-del" data-i="${i}" aria-label="Удалить строку">${icon('trash')}</button>
+      </div>`).join('')}</div>`
+      : `<p class="muted">Позиции распознать не получилось: попробуйте переснять ровнее и при хорошем свете. Или сохраните чек одной суммой.</p>`}
+      <button type="button" class="btn small" data-act="rc-add">${icon('plus')}<span>Добавить строку</span></button>
+      <div class="rc-sum" id="rc-sum">${receiptSumHtml(d)}</div>
+      <label class="check"><input type="checkbox" name="tolist" checked> Отметить купленным в списке покупок</label>
+      <label class="check"><input type="checkbox" name="topantry" checked> Добавить в «Есть дома»</label>
+      ${d.text ? `<details class="rc-raw"><summary>Распознанный текст</summary><textarea readonly rows="8">${esc(d.text)}</textarea></details>` : ''}
+      <div class="form-actions wrap">
+        ${qr || !d.items.length ? `<button type="button" class="btn" data-act="rc-lump">Одной суммой</button>` : ''}
+        <button type="button" class="btn" data-act="close">Отмена</button>
+        <button class="btn primary" ${d.items.length ? '' : 'disabled'}>Сохранить</button>
+      </div>
+    </form>`;
+  }
+
+  function receiptSumHtml(d) {
+    const sum = d.items.filter((i) => i.on).reduce((s, i) => s + num2(i.total), 0);
+    if (!d.qr) return `Итого по позициям: <b>${money(sum)} ₽</b>${d.ocrTotal ? ` · на чеке «итог» ${money(d.ocrTotal)} ₽` : ''}`;
+    const diff = Math.round((sum - d.qr.sum) * 100) / 100;
+    const ok = Math.abs(diff) < 0.5;
+    // позиции дороже чека — это скидки, их можно разнести по позициям;
+    // дешевле — какая-то строка не распозналась, её надо дописать, а не раздувать цены
+    const hint = ok ? '' : diff > 0
+      ? (diff <= d.qr.sum * 0.3 ? `<button type="button" class="linklike" data-act="rc-fit">Учесть скидку ${money(diff)} ₽: разнести по позициям</button>` : '<small>Похоже, лишняя строка: снимите галочку у неё.</small>')
+      : `<small>Не хватает позиций на ${money(-diff)} ₽: добавьте строку или посмотрите «Распознанный текст».</small>`;
+    return `<span class="${ok ? 'ok-text' : 'warn-text'}">Позиции: <b>${money(sum)} ₽</b> · по чеку: <b>${money(d.qr.sum)} ₽</b>
+      ${ok ? ' · сходится ✓' : ` · ${diff > 0 ? 'больше' : 'меньше'} на ${money(Math.abs(diff))} ₽`}</span>${hint}`;
+  }
+
+  // перенести то, что человек поправил в форме, обратно в черновик
+  function readReceiptForm(f) {
+    const d = receiptDraft;
+    d.date = f.date.value; d.shop = f.shop.value;
+    f.querySelectorAll('.rc-row').forEach((row) => {
+      const it = d.items[+row.dataset.i];
+      if (!it) return;
+      it.on = row.querySelector('[name="on"]').checked;
+      it.name = row.querySelector('[name="n"]').value.trim();
+      it.qty = row.querySelector('[name="q"]').value.trim();
+      it.unit = row.querySelector('[name="unit"]').value;
+      it.total = num2(row.querySelector('[name="p"]').value);
+    });
+    return d;
+  }
+
+  async function saveReceipt(f, lump) {
+    const d = readReceiptForm(f);
+    const date = d.date || U.today();
+    const key = d.qr ? d.qr.key : '';
+    if (key && Store.all('shopping').some((s) => s.receipt === key)) {
+      if (!(await confirmBox('Этот чек уже добавляли. Добавить ещё раз?', 'Добавить'))) return;
+    }
+    const base = { status: 'bought', bought_on: date, shop: d.shop || '', receipt: key, created_on: U.today() };
+    if (lump) {
+      const sum = d.qr ? d.qr.sum : d.items.filter((i) => i.on).reduce((s, i) => s + num2(i.total), 0);
+      if (!sum) { toast('Нет суммы: впишите позиции или переснимите чек с QR-кодом'); return; }
+      await Store.save('shopping', { ...base, name: d.shop ? `Чек: ${d.shop}` : 'Чек', qty: '', unit: '', price: money(sum), lump: true });
+      closeModal();
+      toast(`Чек сохранён одной суммой: ${money(sum)} ₽`);
+      return;
+    }
+    const rows = d.items.filter((i) => i.on && i.name && num2(i.total) > 0);
+    if (!rows.length) { toast('Нет отмеченных позиций'); return; }
+    const toList = f.tolist.checked, toPantry = f.topantry.checked;
+    const todo = Store.all('shopping').filter((s) => s.status !== 'bought');
+    const used = new Set(), out = [];
+    for (const r of rows) {
+      const t = toList && todo.find((x) => !used.has(x.id) && (U.norm(x.name) === U.norm(r.name) || U.sameIng(x.name, r.name)));
+      const rec = { ...base, name: r.name, qty: r.qty, unit: r.unit, price: money(num2(r.total)), note: d.shop ? 'чек: ' + d.shop : 'чек' };
+      if (t) { used.add(t.id); out.push({ ...t, ...rec, name: t.name }); } else out.push(rec);
+    }
+    await Store.saveMany('shopping', out);
+    if (toPantry) for (const r of rows) await addToPantry(r.name, r.unit === 'шт' && !r.qty ? '1' : r.qty, r.unit);
+    closeModal();
+    receiptDraft = null;
+    const sum = rows.reduce((s, r) => s + num2(r.total), 0);
+    toast(`Чек сохранён: ${rows.length} поз. на ${money(sum)} ₽${used.size ? `, из списка покупок: ${used.size}` : ''}`);
+  }
+
   // ---------- Расходы ----------
   const priceOf = (s) => { const v = parseFloat(String(s.price || '').replace(/\s/g, '').replace(',', '.')); return isFinite(v) && v > 0 ? v : 0; };
   const rub = (n) => Math.round(n).toLocaleString('ru-RU') + ' ₽';
@@ -744,11 +894,14 @@
     }).join('')}</div>`;
 
     const byCat = {};
-    priced.forEach((s) => { const c = catOf(s.name); byCat[c] = (byCat[c] || 0) + priceOf(s); });
+    priced.forEach((s) => { const c = s.lump ? 'Чеки без разбивки' : catOf(s.name); byCat[c] = (byCat[c] || 0) + priceOf(s); });
+    const byShop = {};
+    priced.forEach((s) => { if (s.shop) byShop[s.shop] = (byShop[s.shop] || 0) + priceOf(s); });
+    const shopsTop = Object.entries(byShop).sort((a, b) => b[1] - a[1]);
     const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
     const maxC = cats.length ? cats[0][1] : 1;
     const byProd = {};
-    priced.forEach((s) => { const n = U.norm(s.name); byProd[n] = byProd[n] || { name: s.name, sum: 0, n: 0 }; byProd[n].sum += priceOf(s); byProd[n].n++; });
+    priced.filter((s) => !s.lump).forEach((s) => { const n = U.norm(s.name); byProd[n] = byProd[n] || { name: s.name, sum: 0, n: 0 }; byProd[n].sum += priceOf(s); byProd[n].n++; });
     const top = Object.values(byProd).sort((a, b) => b.sum - a.sum).slice(0, 10);
 
     return `
@@ -762,6 +915,8 @@
       ${cats.length ? `<section class="card"><h2>По отделам в ${esc(monthIn(sel))}</h2>
         <ul class="hbars">${cats.map(([c, v]) => `<li title="${esc(c)}: ${rub(v)}"><span class="hl">${esc(c)}</span>
           <span class="track"><i style="width:${Math.max(2, Math.round((v / maxC) * 100))}%"></i></span><b>${rub(v)}</b></li>`).join('')}</ul></section>` : ''}
+      ${shopsTop.length > 1 ? `<section class="card"><h2>По магазинам в ${esc(monthIn(sel))}</h2>
+        <ul class="toplist">${shopsTop.map(([s, v]) => `<li><span>${esc(s)}</span><b>${rub(v)}</b></li>`).join('')}</ul></section>` : ''}
       ${top.length ? `<section class="card"><h2>Больше всего потратили на</h2>
         <ul class="toplist">${top.map((p) => `<li><span>${esc(p.name)}${p.n > 1 ? ` <small class="muted">×${p.n}</small>` : ''}</span><b>${rub(p.sum)}</b></li>`).join('')}</ul></section>` : ''}`;
   }
@@ -1286,6 +1441,34 @@
       toast(n ? `Добавлено в покупки: ${n}` : 'Всё уже есть в списке покупок');
     },
     'photo-clear': (el) => setFormPhoto(el.closest('form'), ''),
+    'rc-del': (el) => {
+      const f = el.closest('form');
+      readReceiptForm(f);
+      receiptDraft.items.splice(+el.dataset.i, 1);
+      openModal(receiptForm(receiptDraft));
+    },
+    'rc-add': (el) => {
+      readReceiptForm(el.closest('form'));
+      receiptDraft.items.push({ name: '', orig: '', qty: '1', unit: 'шт', total: 0, on: true });
+      openModal(receiptForm(receiptDraft));
+      const rows = document.querySelectorAll('#modal .rc-row [name="n"]');
+      if (rows.length) rows[rows.length - 1].focus();
+    },
+    'rc-fit': (el) => {
+      const f = el.closest('form');
+      const d = readReceiptForm(f);
+      const on = d.items.filter((i) => i.on && num2(i.total) > 0);
+      const sum = on.reduce((s, i) => s + num2(i.total), 0);
+      if (!d.qr || !sum || sum <= d.qr.sum) return;
+      const k = d.qr.sum / sum;
+      on.forEach((i) => { i.total = Math.round(num2(i.total) * k * 100) / 100; });
+      // копейки от округления — на самую дорогую позицию
+      const rest = Math.round((d.qr.sum - on.reduce((s, i) => s + i.total, 0)) * 100) / 100;
+      if (rest) { const big = on.reduce((a, b) => (b.total > a.total ? b : a)); big.total = Math.round((big.total + rest) * 100) / 100; }
+      openModal(receiptForm(d));
+      toast('Скидка распределена по позициям');
+    },
+    'rc-lump': (el) => saveReceipt(el.closest('form'), true),
     serv: (el) => {
       const r = Store.get('recipes', el.dataset.id);
       scaleFor[r.id] = Math.max(1, (scaleFor[r.id] || baseServings(r)) + Number(el.dataset.d));
@@ -1565,6 +1748,7 @@
       toast('Рецепт сохранён');
     },
     cooked: (f) => saveCooked(f),
+    receipt: (f) => saveReceipt(f, false),
     'cat-qty': async (f) => {
       const fd = Object.fromEntries(new FormData(f));
       const qty = fd.qty.trim().replace('.', ',');
@@ -1678,6 +1862,15 @@
       }, 120);
     }
     if (el.id === 'pick-q') renderPickList();
+    // экран проверки чека: сумма пересчитывается на лету
+    const rf = el.closest && el.closest('form.receipt');
+    if (rf && receiptDraft && (el.name === 'p' || el.name === 'on')) {
+      readReceiptForm(rf);
+      const row = el.closest('.rc-row');
+      if (row) row.classList.toggle('off', !row.querySelector('[name="on"]').checked);
+      const box = $('#rc-sum');
+      if (box) box.innerHTML = receiptSumHtml(receiptDraft);
+    }
     if (el.name === 'expires_on') el.removeAttribute('data-auto');
   });
   document.addEventListener('change', (e) => {
@@ -1686,6 +1879,11 @@
     if (el.hasAttribute('data-shelf-src')) {
       const f = el.form, exp = f.expires_on;
       if (exp.dataset.auto) exp.value = U.addMonths(f.made_on.value || U.today(), defaultShelf(f.kind.value, f.owner.value));
+    }
+    if (el.dataset.actChange === 'receipt' && el.files.length) {
+      const files = [...el.files];
+      el.value = '';
+      openReceiptScan(files);
     }
     if (el.dataset.price) {
       const s = Store.get('shopping', el.dataset.price);

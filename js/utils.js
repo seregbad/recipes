@@ -127,7 +127,9 @@
     return v;
   };
 
-  const stemMatch = (a, b) => a === b || (b.length >= 3 && a.startsWith(b)) || (a.length >= 3 && b.startsWith(a));
+  // a — основа из текста, b — из справочника. «луковица» подходит к «лук» (текст длиннее).
+  // Обратно — только для длинных сокращений («картоф» → «картофель»), иначе «паст.» стало бы «пастернаком».
+  const stemMatch = (a, b) => a === b || (b.length >= 3 && a.startsWith(b)) || (a.length >= 5 && b.startsWith(a) && a.length / b.length >= 0.7);
   // все основы из small встречаются среди основ big
   const covers = (big, small) => small.length > 0 && small.every((s) => big.some((b) => stemMatch(b, s)));
 
