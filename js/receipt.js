@@ -263,5 +263,22 @@
     return { qr, text, items: parsed.items, ocrTotal: parsed.total };
   }
 
-  window.Receipt = { scan, parseQR, parseText, prepForOCR, findQR };
+  // Распознать текст с любых картинок (фото страницы рецепта и т.п.)
+  async function ocrText(sources, onProgress, psm = '4') {
+    const canvases = [];
+    for (const s of sources) canvases.push(prepForOCR(s instanceof HTMLCanvasElement ? s : await loadImage(s)));
+    await loadScript(LIBS.tesseract);
+    const worker = await window.Tesseract.createWorker('rus', 1, {
+      ...TESS,
+      logger: (m) => { if (onProgress && m.status === 'recognizing text') onProgress(m.progress); },
+    });
+    try {
+      await worker.setParameters({ tessedit_pageseg_mode: psm, preserve_interword_spaces: '1' });
+      let text = '';
+      for (const c of canvases) { const { data } = await worker.recognize(c); text += data.text + '\n'; }
+      return text;
+    } finally { worker.terminate(); }
+  }
+
+  window.Receipt = { scan, parseQR, parseText, prepForOCR, findQR, ocrText, loadScript };
 })();

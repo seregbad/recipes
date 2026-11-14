@@ -230,6 +230,7 @@
     return `
       <div class="page-head">
         <h1>Рецепты</h1>
+        <label class="btn grow-0" title="txt, pdf, Word или фото страницы; можно несколько файлов сразу">${icon('upload')}<span>Из файла</span><input type="file" accept="${RECIPE_FILE_TYPES}" multiple data-act-change="recipe-files" hidden></label>
         <button class="btn primary" data-act="recipe-new">${icon('plus')}<span>Рецепт</span></button>
       </div>
       <div class="toolbar">
@@ -337,15 +338,20 @@
             ${a.total ? `<span class="muted small">дома есть ${a.have} из ${a.total}</span>` : ''}</div>
           ${servingsStepper(r)}
           <ul class="ings">
-            ${(r.ingredients || []).map((i) => {
+            ${(r.ingredients || []).map((i, n) => {
               const ignored = ui.ignoreStaples && (U.isStaple(ingLabel(i)) || i.unit === 'по вкусу');
               const miss = missingSet.has(i);
+              const listed = miss && inShoppingList(ingLabel(i));
               return `<li class="${ignored ? 'staple' : miss ? 'miss' : 'have'}">
                 <span class="dot">${ignored ? '' : miss ? icon('x') : icon('check')}</span>
-                <span>${esc(ingText(i, scaleOf(r)))}</span></li>`;
+                <span class="ing-t">${esc(ingText(i, scaleOf(r)))}</span>
+                ${miss ? `<span class="ing-acts">
+                  <button class="mini" data-act="ing-home" data-id="${esc(r.id)}" data-i="${n}" title="Это есть дома">дома</button>
+                  ${listed ? '<em class="tag">в списке</em>' : `<button class="mini" data-act="ing-shop" data-id="${esc(r.id)}" data-i="${n}" title="Добавить в покупки">${icon('cart')}</button>`}
+                </span>` : ''}</li>`;
             }).join('') || '<li class="muted">Ингредиенты не указаны</li>'}
           </ul>
-          ${a.missing.length ? `<button class="btn primary block" data-act="recipe-to-shop" data-id="${esc(r.id)}">${icon('cart')}<span>Не хватает ${a.missing.length}: добавить в покупки</span></button>` : a.total ? `<p class="ok-line">${icon('check')} Всё есть дома, можно готовить</p>` : ''}
+          ${a.missing.length ? `<button class="btn primary block" data-act="recipe-to-shop" data-id="${esc(r.id)}">${icon('cart')}<span>Не хватает ${a.missing.length}: выбрать, что купить</span></button>` : a.total ? `<p class="ok-line">${icon('check')} Всё есть дома, можно готовить</p>` : ''}
         </section>
 
         ${steps.length ? `<section class="card"><h2>Приготовление</h2>
@@ -376,6 +382,11 @@
           <button type="button" class="btn" data-act="recipe-import">${icon('download')}<span>Загрузить</span></button></div>
           <small class="muted">${importHint}</small>
         </label>
+        <div class="file-import">
+          <label class="btn">${icon('upload')}<span>Из файла</span><input type="file" accept="${RECIPE_FILE_TYPES}" data-act-change="recipe-file" hidden></label>
+          <small class="muted" id="rf-status">txt, pdf, Word (docx) или фото страницы из книги: текст разберётся сам</small>
+        </div>
+        <input type="hidden" name="link_menu" value="${esc(r.linkMenu || '')}">
         <label>Название*<input name="title" required value="${esc(r.title || '')}" ${r.id ? '' : 'autofocus'}></label>
         <div class="grid2">
           <label>Категория<select name="category"><option value=""></option>${RECIPE_CATS.map((c) => `<option ${r.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
@@ -400,6 +411,52 @@
           <button class="btn primary" type="submit">Сохранить</button>
         </div>
       </form>`;
+  }
+
+  // ---------- Рецепты из файлов ----------
+  const RECIPE_FILE_TYPES = '.txt,.md,.pdf,.docx,.doc,.rtf,.html,.htm,text/plain,application/pdf,image/*';
+  // заполнить открытую форму рецепта разобранным файлом
+  function fillRecipeForm(f, d) {
+    if (!f.title.value.trim() || f.title.value === d.fallback) f.title.value = d.title;
+    if (d.servings && !f.servings.value) f.servings.value = d.servings;
+    if (d.time && !f.time.value) f.time.value = d.time;
+    if (d.ingredients.length) f.ingredients.value = d.ingredients.join('\n');
+    if (d.steps.length) f.steps.value = d.steps.join('\n');
+    const cat = guessCategory(d.title);
+    if (cat && !f.category.value) f.category.value = cat;
+  }
+  function guessCategory(title) {
+    const t = U.norm(title);
+    const rules = [['Супы', /суп|борщ|щи |солянк|бульон|уха|окрошк|рассольник/], ['Салаты', /салат|винегрет|оливье/], ['Десерты', /торт|пирожн|десерт|мусс|печенье|кекс|маффин|тирамису|запеканк[аи] творож|сырник/],
+      ['Выпечка', /пирог|пирожк|хлеб|булоч|пицц|блин|оладь|лепёшк|лепешк|ватруш/], ['Завтраки', /каша|омлет|яичниц|гранол|мюсли|тост/], ['Соусы', /соус|заправк|подлив/], ['Напитки', /компот|морс|смузи|коктейл|какао|лимонад/],
+      ['Гарниры', /гарнир|пюре|рис отварн|гречк|булгур|кускус/]];
+    const hit = rules.find(([, re]) => re.test(t + ' '));
+    return hit ? hit[0] : '';
+  }
+  async function importRecipeFiles(files) {
+    if (files.length === 1) {
+      toast('Читаю файл…');
+      const d = await RecipeImport.fromFile(files[0], (p) => toast(`Распознаю текст… ${Math.round(p * 100)}%`));
+      openModal(recipeForm({
+        title: d.title, servings: d.servings, time: d.time, status: 'new', category: guessCategory(d.title),
+        ingredients: parseIngredients(d.ingredients.join('\n')), steps: d.steps.join('\n'), notes: `Из файла «${d.source}»`,
+      }));
+      toast(d.ingredients.length ? 'Проверьте рецепт и сохраните' : 'Ингредиенты не нашлись, допишите их вручную');
+      return;
+    }
+    // несколько файлов — сразу в «Не пробовали»
+    const done = [], failed = [];
+    for (let i = 0; i < files.length; i++) {
+      toast(`Читаю файлы: ${i + 1} из ${files.length}…`);
+      try {
+        const d = await RecipeImport.fromFile(files[i]);
+        done.push({ title: d.title, servings: d.servings, time: d.time, status: 'new', category: guessCategory(d.title), url: '', image: '',
+          ingredients: parseIngredients(d.ingredients.join('\n')), steps: d.steps.join('\n'), notes: `Из файла «${d.source}»` });
+      } catch (e) { failed.push(files[i].name); }
+    }
+    if (done.length) await Store.saveMany('recipes', done);
+    toast(`Добавлено рецептов: ${done.length}${failed.length ? `. Не прочитались: ${failed.join(', ')}` : ''}`, failed.length ? 'err' : '');
+    if (done.length) { ui.rStatus = 'new'; saveUI(); location.hash = '#/recipes'; refresh(); }
   }
 
   // ---------- Фото: сжатие перед загрузкой ----------
@@ -559,6 +616,35 @@
             </span></li>`;
         }).join('')}</ul>
       </details>`).join('') + addCustom;
+  }
+
+  const inShoppingList = (name) => Store.all('shopping').some((s) => s.status !== 'bought' && (U.norm(s.name) === U.norm(name) || U.sameIng(s.name, name)));
+
+  // Выбор по пунктам: для каждой строки «купить» / «есть дома» / «пропустить», с количеством.
+  // items: [{ name, qty, unit, note, src }]
+  let pickItemsData = [];
+  function openPickItems(title, items) {
+    pickItemsData = items;
+    openModal(`<form class="form pick-items" data-form="pick-items">
+      <div class="form-head"><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+      <div class="row wrap"><small class="muted grow">Для каждой строки выберите, что сделать.</small>
+        <button type="button" class="mini" data-act="pi-all" data-v="buy">всё купить</button>
+        <button type="button" class="mini" data-act="pi-all" data-v="home">всё есть</button></div>
+      <div class="pi-rows">${items.map((it, i) => {
+        const listed = inShoppingList(it.name);
+        const def = listed ? 'skip' : 'buy';
+        return `<div class="pi-row" data-i="${i}">
+          <div class="pi-top"><b>${esc(it.name)}</b>${listed ? ' <em class="tag">уже в списке</em>' : ''}${it.note ? `<small>${esc(it.note)}</small>` : ''}</div>
+          <div class="pi-ctl">
+            <input name="q${i}" inputmode="decimal" value="${esc(it.qty || '')}" placeholder="кол-во" aria-label="Количество">
+            ${unitSelect(it.unit).replace('name="unit"', `name="u${i}"`)}
+            <div class="seg3" role="radiogroup" aria-label="Что сделать">
+              ${[['buy', 'Купить'], ['home', 'Есть'], ['skip', '—']].map(([v, l]) => `<label><input type="radio" name="a${i}" value="${v}" ${v === def ? 'checked' : ''}><span>${l}</span></label>`).join('')}
+            </div>
+          </div></div>`;
+      }).join('')}</div>
+      <div class="form-actions"><button type="button" class="btn" data-act="close">Отмена</button><button class="btn primary">Готово</button></div>
+    </form>`);
   }
 
   // Окно «сколько?» при добавлении из справочника
@@ -1249,7 +1335,7 @@
         return `<section class="day ${d === today ? 'today' : ''} ${d < today ? 'past' : ''}">
           <h3>${WD[i]}, ${esc(U.fmtDate(d))}${d === today ? ' <em class="tag ok">сегодня</em>' : ''}</h3>
           ${SLOTS.map(([k, l]) => `<div class="slot"><span class="slot-l">${l}</span><div class="dishes">
-            ${(day[k] || []).map((x, j) => `<span class="dish">${freezerBadge(inFreezer(x.rid, dishTitle(x)))}${x.rid ? `<a href="#/recipe/${encodeURIComponent(x.rid)}">${esc(dishTitle(x))}</a>` : `<span>${esc(dishTitle(x))}</span>`}<button data-act="menu-del" data-date="${d}" data-slot="${k}" data-j="${j}" aria-label="Убрать">${icon('x')}</button></span>`).join('')}
+            ${(day[k] || []).map((x, j) => `<span class="dish">${freezerBadge(inFreezer(x.rid, dishTitle(x)))}${x.rid ? `<a href="#/recipe/${encodeURIComponent(x.rid)}">${esc(dishTitle(x))}</a>` : `<button class="dish-text" data-act="menu-text-dish" data-date="${d}" data-slot="${k}" data-j="${j}" title="Блюдо без рецепта">${esc(dishTitle(x))}</button>`}<button data-act="menu-del" data-date="${d}" data-slot="${k}" data-j="${j}" aria-label="Убрать">${icon('x')}</button></span>`).join('')}
             <button class="dish add" data-act="menu-pick" data-date="${d}" data-slot="${k}" aria-label="Добавить блюдо: ${l}">${icon('plus')}</button>
           </div></div>`).join('')}
         </section>`;
@@ -1261,28 +1347,42 @@
     const def = SLOT_CATS[slot].find((c) => cats.includes(c)) || '';
     openModal(`<div class="form picker" data-date="${date}" data-slot="${slot}" data-cat="${esc(def)}">
       <div class="form-head"><h2>${SLOTS.find((s) => s[0] === slot)[1]}, ${esc(U.fmtDate(date))}</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
-      <label class="search">${icon('search')}<input id="pick-q" type="search" placeholder="Найти блюдо" autocomplete="off"></label>
+      <form class="pick-form" data-form="menu-text">
+        <label class="search">${icon('search')}<input id="pick-q" name="text" type="search" placeholder="Найдите рецепт или впишите любое блюдо" autocomplete="off" enterkeyhint="done"></label>
+        <div id="pick-add"></div>
+      </form>
       <div class="chips">${['', ...cats].map((c) => `<button type="button" class="chip ${c === def ? 'on' : ''}" data-act="pick-cat" data-cat="${esc(c)}">${esc(c || 'Все')}</button>`).join('')}</div>
       <div id="pick-list" class="pick-list"></div>
-      <form class="row" data-form="menu-text"><input name="text" placeholder="или впишите блюдо без рецепта" required><button class="btn">${icon('plus')}</button></form>
     </div>`);
     renderPickList();
   }
+  // блюда без рецепта, которые уже ставили в меню, — чтобы не набирать заново
+  const pastTextDishes = () => {
+    const seen = new Map();
+    Store.all('menu').forEach((d) => SLOTS.forEach(([k]) => (d[k] || []).forEach((x) => { if (x.text) seen.set(U.norm(x.text), x.text); })));
+    return [...seen.values()];
+  };
   function renderPickList() {
     const box = $('#modal .picker');
     if (!box) return;
-    const q = U.norm($('#pick-q', box).value);
+    const raw = $('#pick-q', box).value.trim();
+    const q = U.norm(raw);
     const cat = box.dataset.cat;
     const names = pantry().map((p) => p.name);
     const list = Store.all('recipes')
       .filter((r) => r.status !== 'meh' && (q ? U.norm(r.title).includes(q) : !cat || r.category === cat))
       .sort((a, b) => (b.status === 'liked') - (a.status === 'liked') || String(a.title).localeCompare(String(b.title), 'ru'));
-    $('#pick-list', box).innerHTML = list.length ? list.map((r) => {
-      const a = analyze(r, names);
-      const fz = inFreezer(r.id, r.title);
-      return `<button type="button" class="pick-item" data-act="pick" data-rid="${esc(r.id)}"><b>${esc(r.title)}</b>
-        <small>${esc(r.category || '')}${fz ? ` · ❄ в морозилке ${esc(U.fmtQty(fz.qty, fz.unit))}` : a.total ? ` · дома ${a.have} из ${a.total}` : ''}</small></button>`;
-    }).join('') : `<div class="empty small">Нет подходящих блюд</div>`;
+    const texts = pastTextDishes().filter((t) => q && U.norm(t).includes(q) && U.norm(t) !== q);
+    const exact = list.some((r) => U.norm(r.title) === q);
+    $('#pick-add', box).innerHTML = raw && !exact
+      ? `<button class="btn primary block" type="submit">${icon('plus')}<span>Добавить «${esc(raw)}» без рецепта</span></button>` : '';
+    $('#pick-list', box).innerHTML = (texts.map((t) => `<button type="button" class="pick-item" data-act="pick-text" data-text="${esc(t)}"><b>${esc(t)}</b><small>без рецепта, уже было в меню</small></button>`).join('') +
+      list.map((r) => {
+        const a = analyze(r, names);
+        const fz = inFreezer(r.id, r.title);
+        return `<button type="button" class="pick-item" data-act="pick" data-rid="${esc(r.id)}"><b>${esc(r.title)}</b>
+          <small>${esc(r.category || '')}${fz ? ` · ❄ в морозилке ${esc(U.fmtQty(fz.qty, fz.unit))}` : a.total ? ` · дома ${a.have} из ${a.total}` : ''}</small></button>`;
+      }).join('')) || `<div class="empty small">${raw ? 'Рецептов с таким названием нет: добавьте блюдо кнопкой выше' : 'Нет блюд в этой категории'}</div>`;
   }
 
   async function addDish(date, slot, dish) {
@@ -1345,7 +1445,7 @@
         e.titles.add(r.title);
       });
     });
-    return addToShopping([...need].map(([name, e]) => ({ name, ...U.sumQty(e.qtys), note: 'меню: ' + [...e.titles].join(', '), src: 'week:' + days[0] })));
+    return [...need].map(([name, e]) => ({ name, ...U.sumQty(e.qtys), note: 'меню: ' + [...e.titles].join(', '), src: 'week:' + days[0] }));
   }
 
   // =====================================================================
@@ -1437,8 +1537,21 @@
       const r = Store.get('recipes', el.dataset.id);
       const a = analyze(r, [...pantry().map((p) => p.name), ...(route().name === 'match' ? ui.matchExtra || [] : [])]);
       const f = scaleOf(r);
-      const n = await addToShopping(a.missing.map((i) => ({ name: ingLabel(i), qty: U.scaleQty(i.qty, f), unit: i.unit === 'по вкусу' ? '' : i.unit, note: r.title, src: `r:${r.id}:${scaleFor[r.id] || ''}` })));
-      toast(n ? `Добавлено в покупки: ${n}` : 'Всё уже есть в списке покупок');
+      openPickItems(`Не хватает для «${r.title}»`, a.missing.map((i) => ({ name: ingLabel(i), qty: U.scaleQty(i.qty, f), unit: i.unit === 'по вкусу' ? '' : i.unit, note: '', src: `r:${r.id}:${scaleFor[r.id] || ''}` })));
+    },
+    // один ингредиент рецепта: «есть дома» или «купить»
+    'ing-home': async (el) => {
+      const r = Store.get('recipes', el.dataset.id), i = r.ingredients[+el.dataset.i];
+      await addToPantry(ingLabel(i), '', '');
+      toast(`«${ingLabel(i)}»: есть дома`);
+    },
+    'ing-shop': async (el) => {
+      const r = Store.get('recipes', el.dataset.id), i = r.ingredients[+el.dataset.i];
+      await addToShopping([{ name: ingLabel(i), qty: U.scaleQty(i.qty, scaleOf(r)), unit: i.unit === 'по вкусу' ? '' : i.unit, note: r.title, src: `r:${r.id}:${scaleFor[r.id] || ''}` }]);
+      toast(`«${ingLabel(i)}» в покупках`);
+    },
+    'pi-all': (el) => {
+      el.closest('form').querySelectorAll(`input[type="radio"][value="${el.dataset.v}"]`).forEach((x) => { x.checked = true; });
     },
     'photo-clear': (el) => setFormPhoto(el.closest('form'), ''),
     'rc-del': (el) => {
@@ -1583,6 +1696,27 @@
       $('#pick-q', box).value = '';
       renderPickList();
     },
+    'pick-text': async (el) => {
+      const box = el.closest('.picker');
+      await addDish(box.dataset.date, box.dataset.slot, { text: el.dataset.text });
+      closeModal();
+    },
+    // блюдо без рецепта в меню: можно сразу завести рецепт, и в меню оно станет ссылкой
+    'menu-text-dish': (el) => {
+      const day = menuDay(el.dataset.date);
+      const x = (day[el.dataset.slot] || [])[+el.dataset.j];
+      if (!x) return;
+      openModal(`<div class="form">
+        <div class="form-head"><h2>${esc(x.text)}</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+        <p class="muted">Блюдо без рецепта. Можно завести для него рецепт, и в меню оно станет ссылкой на рецепт.</p>
+        <div class="form-actions"><button type="button" class="btn" data-act="close">Закрыть</button>
+          <button type="button" class="btn primary" data-act="menu-text-to-recipe" data-date="${el.dataset.date}" data-slot="${el.dataset.slot}" data-j="${el.dataset.j}">${icon('plus')}<span>Создать рецепт</span></button></div>
+      </div>`);
+    },
+    'menu-text-to-recipe': (el) => {
+      const x = (menuDay(el.dataset.date)[el.dataset.slot] || [])[+el.dataset.j];
+      openModal(recipeForm({ title: x ? x.text : '', status: 'new', linkMenu: `${el.dataset.date}|${el.dataset.slot}|${el.dataset.j}` }));
+    },
     pick: async (el) => {
       const box = el.closest('.picker');
       await addDish(box.dataset.date, box.dataset.slot, { rid: el.dataset.rid });
@@ -1600,8 +1734,9 @@
       toast(n ? `Заполнено дней: ${n}` : 'Пустых мест нет (или нет блюд нужных категорий)');
     },
     'menu-shop': async () => {
-      const n = await weekToShopping();
-      toast(n ? `В покупки добавлено: ${n}` : 'Всё для меню уже есть дома или в списке');
+      const items = await weekToShopping();
+      if (!items.length) { toast('Для меню всё есть дома'); return; }
+      openPickItems(`Продукты для меню (${items.length})`, items);
     },
     'menu-clear': async () => {
       const days = weekDays(ui.menuWeek || 0);
@@ -1743,11 +1878,39 @@
         ingredients: parseIngredients(fd.ingredients), steps: fd.steps.trim(), notes: fd.notes.trim(),
       };
       const saved = await Store.save('recipes', rec);
+      // рецепт заведён для блюда из меню — в меню ставим ссылку на него вместо текста
+      if (fd.link_menu) {
+        const [date, slot, j] = fd.link_menu.split('|');
+        const src = (menuDay(date)[slot] || [])[+j];
+        // все одноимённые блюда без рецепта во всём меню становятся ссылкой на новый рецепт
+        const names = new Set([U.norm(saved.title), src && src.text ? U.norm(src.text) : ''].filter(Boolean));
+        const changed = Store.all('menu').map((day) => {
+          let hit = false;
+          const upd = { ...day };
+          SLOTS.forEach(([k]) => { upd[k] = (day[k] || []).map((x) => (x.text && names.has(U.norm(x.text)) ? (hit = true, { rid: saved.id }) : x)); });
+          return hit ? upd : null;
+        }).filter(Boolean);
+        if (changed.length) await Store.saveMany('menu', changed);
+      }
       closeModal();
       location.hash = '#/recipe/' + encodeURIComponent(saved.id);
       toast('Рецепт сохранён');
     },
     cooked: (f) => saveCooked(f),
+    'pick-items': async (f) => {
+      const buy = [], home = [];
+      pickItemsData.forEach((it, i) => {
+        const act = (f.querySelector(`input[name="a${i}"]:checked`) || {}).value;
+        const qty = f[`q${i}`].value.trim().replace('.', ','), unit = f[`u${i}`].value;
+        if (act === 'buy') buy.push({ ...it, qty, unit });
+        else if (act === 'home') home.push({ ...it, qty, unit });
+      });
+      const n = buy.length ? await addToShopping(buy) : 0;
+      // количество в строке — сколько нужно купить; для «есть дома» его не записываем
+      for (const it of home) await addToPantry(it.name, '', '');
+      closeModal();
+      toast([n ? `в покупки: ${n}` : '', home.length ? `есть дома: ${home.length}` : ''].filter(Boolean).join(', ') || 'Ничего не выбрано');
+    },
     receipt: (f) => saveReceipt(f, false),
     'cat-qty': async (f) => {
       const fd = Object.fromEntries(new FormData(f));
@@ -1759,7 +1922,11 @@
     },
     'menu-text': async (f) => {
       const box = f.closest('.picker');
-      await addDish(box.dataset.date, box.dataset.slot, { text: f.text.value.trim() });
+      const text = f.text.value.trim();
+      if (!text) return;
+      // если такой рецепт есть — ставим рецепт, иначе просто текст
+      const r = Store.all('recipes').find((x) => U.norm(x.title) === U.norm(text));
+      await addDish(box.dataset.date, box.dataset.slot, r ? { rid: r.id } : { text });
       closeModal();
     },
     'recipe-menu': async (f) => {
@@ -1879,6 +2046,24 @@
     if (el.hasAttribute('data-shelf-src')) {
       const f = el.form, exp = f.expires_on;
       if (exp.dataset.auto) exp.value = U.addMonths(f.made_on.value || U.today(), defaultShelf(f.kind.value, f.owner.value));
+    }
+    if (el.dataset.actChange === 'recipe-files' && el.files.length) {
+      const files = [...el.files];
+      el.value = '';
+      importRecipeFiles(files).catch(fail);
+    }
+    if (el.dataset.actChange === 'recipe-file' && el.files.length) {
+      const file = el.files[0], f = el.form, st = $('#rf-status');
+      el.value = '';
+      const label = el.closest('label'); if (label) label.classList.add('loading');
+      if (st) st.textContent = 'Читаю файл…';
+      RecipeImport.fromFile(file, (p) => { if (st) st.textContent = `Распознаю текст… ${Math.round(p * 100)}%`; })
+        .then((d) => {
+          fillRecipeForm(f, d);
+          if (st) st.textContent = `Из «${file.name}»: ингредиентов ${d.ingredients.length}, шагов ${d.steps.length}. Проверьте и сохраните.`;
+        })
+        .catch((e) => { if (st) st.textContent = e.message || String(e); fail(e); })
+        .finally(() => { if (label) label.classList.remove('loading'); });
     }
     if (el.dataset.actChange === 'receipt' && el.files.length) {
       const files = [...el.files];
