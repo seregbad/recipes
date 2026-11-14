@@ -7,7 +7,7 @@
   const LOCAL_KEY = 'nasha-kuhnya:v1';
   const CACHE_KEY = 'nasha-kuhnya:cloud-cache:v1';
   const OUTBOX_KEY = 'nasha-kuhnya:outbox:v1';
-  const KINDS = ['recipes', 'pantry', 'shopping', 'preserves', 'custom_ingredients', 'menu'];
+  const KINDS = ['recipes', 'pantry', 'shopping', 'preserves', 'custom_ingredients', 'menu', 'settings'];
 
   const Store = {
     mode: 'local',

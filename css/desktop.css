@@ -1,0 +1,161 @@
+/* «Наша кухня» — версия для компьютера: широкая раскладка, таблицы, перетаскивание, печать */
+
+html[data-app="desktop"] .wrap { max-width: 1320px; padding: 16px 24px; }
+html[data-app="desktop"] #alert { max-width: 1320px; padding: 0 24px; }
+html[data-app="desktop"] #timers { max-width: 1320px; }
+html[data-app="desktop"] body { padding-bottom: 24px; }
+@media (min-width: 760px) {
+  html[data-app="desktop"] #topnav { display: flex; gap: 2px; margin-left: auto; flex-wrap: wrap; }
+  html[data-app="desktop"] .tabbar { display: none; }
+  html[data-app="desktop"] #settings-btn { margin-left: 0; }
+}
+html[data-app="desktop"] #topnav a { padding: 7px 10px; }
+@media (max-width: 1180px) { html[data-app="desktop"] #topnav a span { display: none; } }
+
+/* окна шире: форма рецепта в две колонки */
+html[data-app="desktop"] dialog#modal { width: min(760px, 96vw); }
+html[data-app="desktop"] dialog#modal:has(form[data-form="recipe"]),
+html[data-app="desktop"] dialog#modal:has(form.receipt),
+html[data-app="desktop"] dialog#modal:has(form.pick-items) { width: min(1120px, 96vw); }
+@media (min-width: 980px) {
+  html[data-app="desktop"] form[data-form="recipe"] { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; align-items: start; }
+  html[data-app="desktop"] form[data-form="recipe"] > .form-head,
+  html[data-app="desktop"] form[data-form="recipe"] > .form-actions { grid-column: 1 / -1; }
+  html[data-app="desktop"] form[data-form="recipe"] > label:has(textarea[name="steps"]) { grid-column: 2; grid-row: 2 / span 5; }
+  html[data-app="desktop"] form[data-form="recipe"] > label:has(textarea[name="notes"]) { grid-column: 2; }
+  html[data-app="desktop"] form[data-form="recipe"] textarea[name="steps"] { min-height: 420px; }
+  html[data-app="desktop"] form[data-form="recipe"] textarea[name="ingredients"] { min-height: 260px; }
+}
+
+/* карточка рецепта: ингредиенты слева, приготовление справа */
+@media (min-width: 980px) {
+  html[data-app="desktop"] .recipe { display: grid; grid-template-columns: minmax(320px, 400px) 1fr; gap: 0 24px; grid-auto-flow: row dense; }
+  html[data-app="desktop"] .recipe > * { grid-column: 1 / -1; }
+  html[data-app="desktop"] .recipe > .add-photo { justify-self: start; }
+  html[data-app="desktop"] .recipe > .ings-card { grid-column: 1; grid-row: span 2; align-self: start; position: sticky; top: 76px; }
+  html[data-app="desktop"] .recipe > .steps-card,
+  html[data-app="desktop"] .recipe > .notes-card { grid-column: 2; }
+  html[data-app="desktop"] .recipe .hero { max-height: 340px; }
+  html[data-app="desktop"] .steps li { font-size: 1.05rem; margin-bottom: 10px; }
+}
+
+/* список рецептов: галочка выбора */
+html[data-app="desktop"] .rsel {
+  width: 22px; height: 22px; border-radius: 6px; border: 2px solid var(--line); display: inline-grid; place-items: center;
+  color: transparent; cursor: pointer; background: var(--surface);
+}
+html[data-app="desktop"] .rsel .ic { width: 14px; height: 14px; stroke-width: 3; }
+html[data-app="desktop"] .rsel:hover { border-color: var(--accent); }
+html[data-app="desktop"] .rsel.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (min-width: 720px) {
+  html[data-app="desktop"] .rrow { grid-template-columns: 26px 44px minmax(0, 1fr) 160px 160px 140px; }
+}
+@media (max-width: 719px) { html[data-app="desktop"] .rsel { display: none; } }
+.bulkbar {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; margin-bottom: 10px; border-radius: 12px;
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); position: sticky; top: 64px; z-index: 5;
+}
+.bulkbar select { width: auto; min-height: 34px; padding: 4px 8px; }
+
+/* меню недели — таблица */
+.page-head .weeknav { margin: 0; }
+.mgrid-wrap { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; margin-top: 12px; align-items: start; }
+.mside { position: sticky; top: 76px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; max-height: calc(100vh - 100px); display: flex; flex-direction: column; }
+.mside .chips { margin: 6px 0; }
+.mside .chip { padding: 3px 9px; font-size: .78rem; }
+.mside-list { overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.mside-item { padding: 7px 9px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); cursor: grab; user-select: none; }
+.mside-item:hover { border-color: var(--accent); }
+.mside-item b { display: block; font-size: .88rem; font-weight: 600; }
+.mside-item small { color: var(--muted); font-size: .72rem; }
+.mside.drop-over { outline: 2px dashed var(--bad); outline-offset: 2px; }
+.mgrid-scroll { overflow-x: auto; }
+.mgrid { width: 100%; border-collapse: separate; border-spacing: 4px; table-layout: fixed; min-width: 760px; }
+.mgrid th { font-size: .8rem; color: var(--muted); font-weight: 700; text-align: left; padding: 4px 6px; }
+.mgrid thead th { text-transform: none; }
+.mgrid thead th small { display: block; font-weight: 500; }
+.mgrid thead th.today { color: var(--accent); }
+.mgrid tbody th { width: 64px; vertical-align: top; padding-top: 10px; }
+.mgrid thead th:first-child { width: 64px; }
+.mcell { vertical-align: top; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 5px; min-height: 90px; height: 90px; }
+.mcell.today { border-color: var(--accent); }
+.mcell.past { opacity: .65; }
+.mcell.drop-over { background: var(--accent-soft); border-color: var(--accent); border-style: dashed; }
+.mdish { display: flex; align-items: flex-start; gap: 3px; padding: 4px 4px 4px 7px; margin-bottom: 4px; border-radius: 7px; background: var(--surface-2); font-size: .8rem; line-height: 1.25; cursor: grab; }
+.mdish.dragging { opacity: .4; }
+.mdish a, .mdish .dish-text { flex: 1; min-width: 0; color: var(--text); text-decoration: none; overflow-wrap: anywhere; font-size: .8rem; }
+.mdish .x { border: 0; background: none; color: var(--muted); padding: 0; cursor: pointer; display: grid; opacity: 0; }
+.mdish:hover .x { opacity: 1; }
+.mdish .x .ic { width: 14px; height: 14px; }
+.mdish .fz { color: #3b82c4; display: inline-grid; }
+.mdish .fz .ic { width: 12px; height: 12px; }
+.madd { width: 100%; border: 1px dashed var(--line); background: transparent; color: var(--muted); border-radius: 7px; padding: 2px; cursor: pointer; display: grid; place-items: center; opacity: .5; }
+.mcell:hover .madd { opacity: 1; }
+.madd:hover { color: var(--accent); border-color: var(--accent); }
+.madd .ic { width: 14px; height: 14px; }
+
+/* перетаскивание файлов */
+#drop-overlay { position: fixed; inset: 0; z-index: 2000; display: none; place-items: center; background: color-mix(in srgb, var(--accent) 18%, rgba(0,0,0,.35)); pointer-events: none; }
+#drop-overlay.on { display: grid; }
+#drop-overlay > div { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 48px; border-radius: 20px; background: var(--surface); border: 3px dashed var(--accent); color: var(--text); text-align: center; }
+#drop-overlay .ic { width: 42px; height: 42px; color: var(--accent); }
+#drop-overlay b { font-size: 1.3rem; }
+#drop-overlay span { color: var(--muted); }
+.dropzone { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 18px; border: 2px dashed var(--line); border-radius: 12px; color: var(--muted); cursor: pointer; }
+.dropzone:hover { border-color: var(--accent); color: var(--accent); }
+
+/* инструменты и аналитика */
+.tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 0 16px; }
+.tools .card h2 { display: flex; gap: 8px; align-items: center; }
+.tools .card h2 .ic { color: var(--accent); }
+.bookmarklet { cursor: grab; }
+.dtable { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.dtable th { text-align: left; font-size: .74rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.dtable td { padding: 7px 8px; border-bottom: 1px dashed var(--line); font-variant-numeric: tabular-nums; }
+.dtable tr:last-child td { border-bottom: 0; }
+.dtable td.up { color: var(--bad); }
+.dtable td.down { color: var(--ok); }
+.dtable.keys td:first-child { width: 42%; }
+kbd { display: inline-block; padding: 2px 7px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; background: var(--surface-2); font: 600 .8rem ui-monospace, Consolas, monospace; }
+.stats-3 { grid-template-columns: repeat(3, 1fr); }
+.stat.ok b { color: var(--ok); }
+.stat.warn b { color: var(--warn); }
+.stat.bad b { color: var(--bad); }
+.stat .row input { min-height: 36px; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; align-items: start; }
+@media (max-width: 1000px) { .two-col, .stats-3 { grid-template-columns: 1fr; } }
+.wbars { display: grid; grid-template-columns: repeat(12, 1fr); gap: 6px; height: 200px; align-items: end; }
+.wbar { display: flex; flex-direction: column; align-items: center; height: 100%; gap: 4px; }
+.wbar .mv { font-size: .7rem; color: var(--muted); min-height: 1em; font-variant-numeric: tabular-nums; }
+.wbar .col { flex: 1; width: 100%; max-width: 46px; display: flex; align-items: flex-end; }
+.wbar .col i { display: block; width: 100%; border-radius: 4px 4px 0 0; background: var(--accent); }
+.wbar:hover .col i { filter: brightness(1.1); }
+.wbar .ml { font-size: .72rem; color: var(--muted); }
+
+/* ---------- печать ---------- */
+#print-area { display: none; }
+@media print {
+  @page { margin: 14mm; }
+  body > *:not(#print-area) { display: none !important; }
+  body { background: #fff; color: #000; padding: 0; font: 11pt/1.4 Georgia, "Times New Roman", serif; }
+  #print-area { display: block; }
+  #print-area h1 { font-size: 20pt; margin: 0 0 6pt; }
+  #print-area h2 { font-size: 13pt; margin: 12pt 0 4pt; }
+  .p-meta { color: #444; margin: 0 0 8pt; }
+  .p-photo { max-width: 100%; max-height: 70mm; object-fit: cover; border-radius: 4pt; margin-bottom: 8pt; }
+  .p-cols { display: grid; grid-template-columns: 1fr 1.6fr; gap: 16pt; }
+  .p-cols ul, .p-cols ol { padding-left: 16pt; margin: 0; }
+  .p-cols li { margin-bottom: 3pt; }
+  .p-page { break-before: page; }
+  .p-cover { text-align: center; padding-top: 40mm; }
+  .p-cover h1 { font-size: 30pt; }
+  .p-toc { text-align: left; columns: 2; margin-top: 16mm; }
+  .p-toc small { color: #666; }
+  .p-menu { width: 100%; border-collapse: collapse; margin-top: 8pt; }
+  .p-menu th, .p-menu td { border: 1px solid #999; padding: 6pt; vertical-align: top; text-align: left; }
+  .p-menu tbody th { width: 22mm; }
+  .p-check { list-style: none; padding: 0; columns: 2; }
+  .p-check li { padding: 2pt 0; break-inside: avoid; }
+  .p-shop { columns: 2; }
+  .p-shop section { break-inside: avoid; }
+}

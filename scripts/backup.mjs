@@ -10,7 +10,7 @@ if (missing.length) {
   process.exit(1);
 }
 
-const KINDS = ['recipes', 'pantry', 'shopping', 'preserves', 'custom_ingredients', 'menu'];
+const KINDS = ['recipes', 'pantry', 'shopping', 'preserves', 'custom_ingredients', 'menu', 'settings'];
 const headers = { apikey: env.SUPABASE_SERVICE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}` };
 
 const rows = [];

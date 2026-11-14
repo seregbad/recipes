@@ -150,6 +150,13 @@
     const parts = (location.hash || '#/recipes').replace(/^#\/?/, '').split('/');
     return { name: parts[0] || 'recipes', id: parts[1] ? decodeURIComponent(parts[1]) : null };
   };
+  // версия для компьютера (desktop.html) подключает свои страницы и «крючки» через window.App
+  const isDesktop = document.documentElement.dataset.app === 'desktop';
+  const extraViews = {};
+  const hooks = { recipeRowStart: null, recipeListTop: null, recipeActions: null, menuActions: null, shoppingActions: null };
+  const hook = (name, ...args) => (hooks[name] ? hooks[name](...args) : '');
+  const readyHooks = [];
+
   const NAV = [
     { r: 'recipes', label: 'Рецепты', ic: 'book' },
     { r: 'menu', label: 'Меню', ic: 'cal' },
@@ -187,7 +194,7 @@
     document.querySelectorAll('[data-badge="shopping"]').forEach((el) => { el.textContent = shopCount || ''; el.hidden = !shopCount; });
 
     renderAlert(r.name);
-    const views = { recipes: viewRecipes, recipe: viewRecipe, cook: viewCook, menu: viewMenu, match: viewMatch, products: viewProducts, shopping: viewShopping, preserves: viewPreserves, settings: viewSettings };
+    const views = Object.assign({ recipes: viewRecipes, recipe: viewRecipe, cook: viewCook, menu: viewMenu, match: viewMatch, products: viewProducts, shopping: viewShopping, preserves: viewPreserves, settings: viewSettings }, extraViews);
     main.innerHTML = (views[r.name] || viewRecipes)(r.id);
 
     if (focusId) {
@@ -256,14 +263,14 @@
     }
     if (!list.length) return `<div class="empty small">Ничего не нашлось</div>`;
     const names = pantry().map((p) => p.name);
-    return `<div class="rtable" role="table">
-      <div class="rrow rhead" role="row"><span></span><span>Название</span><span>Категория</span><span>Есть дома</span><span>Статус</span></div>
+    return `${hook('recipeListTop', list)}<div class="rtable" role="table">
+      <div class="rrow rhead" role="row">${hook('recipeRowStart', null, list)}<span></span><span>Название</span><span>Категория</span><span>Есть дома</span><span>Статус</span></div>
       ${list.map((r) => {
         const a = analyze(r, names);
         const pct = a.total ? Math.round((a.have / a.total) * 100) : 0;
         const host = r.url ? safeHost(r.url) : '';
         return `<a class="rrow" role="row" href="#/recipe/${encodeURIComponent(r.id)}">
-          <span class="thumb">${r.image ? `<img src="${esc(r.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : icon('book')}</span>
+          ${hook('recipeRowStart', r)}<span class="thumb">${r.image ? `<img src="${esc(r.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : icon('book')}</span>
           <span class="rtitle"><b>${esc(r.title)}</b>${host || lastCooked(r) ? `<small>${esc([host, lastCooked(r) ? 'готовили ' + U.ago(lastCooked(r)) : ''].filter(Boolean).join(' · '))}</small>` : ''}</span>
           <span class="rcat">${esc(r.category || '')}</span>
           <span class="rhave">${a.total ? `<span class="meter"><i style="width:${pct}%"></i></span><small>${a.have} из ${a.total}</small>` : '<small>—</small>'}</span>
@@ -333,7 +340,7 @@
           <span class="muted small">${esc(cookedText(r))}${(r.cooked || []).length ? ` · <button class="linklike" data-act="cooked-undo" data-id="${esc(r.id)}">отменить последнее</button>` : ''}</span>
         </div>
 
-        <section class="card">
+        <section class="card ings-card">
           <div class="card-head"><h2>Ингредиенты</h2>
             ${a.total ? `<span class="muted small">дома есть ${a.have} из ${a.total}</span>` : ''}</div>
           ${servingsStepper(r)}
@@ -354,14 +361,15 @@
           ${a.missing.length ? `<button class="btn primary block" data-act="recipe-to-shop" data-id="${esc(r.id)}">${icon('cart')}<span>Не хватает ${a.missing.length}: выбрать, что купить</span></button>` : a.total ? `<p class="ok-line">${icon('check')} Всё есть дома, можно готовить</p>` : ''}
         </section>
 
-        ${steps.length ? `<section class="card"><h2>Приготовление</h2>
+        ${steps.length ? `<section class="card steps-card"><h2>Приготовление</h2>
           ${steps.length > 1 ? `<ol class="steps">${steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>` : `<p class="pre">${esc(steps[0])}</p>`}</section>` : ''}
-        ${r.notes ? `<section class="card"><h2>Заметки</h2><p class="pre">${esc(r.notes)}</p></section>` : ''}
+        ${r.notes ? `<section class="card notes-card"><h2>Заметки</h2><p class="pre">${esc(r.notes)}</p></section>` : ''}
 
         <div class="actions-row">
           <button class="btn" data-act="recipe-edit" data-id="${esc(r.id)}">${icon('edit')}<span>Изменить</span></button>
           <button class="btn" data-act="recipe-to-menu" data-id="${esc(r.id)}">${icon('cal')}<span>В меню</span></button>
           <button class="btn" data-act="preserve-from-recipe" data-id="${esc(r.id)}">${icon('snow')}<span>Сделали заготовку</span></button>
+          ${hook('recipeActions', r)}
           <button class="btn danger-ghost" data-act="recipe-delete" data-id="${esc(r.id)}">${icon('trash')}<span>Удалить</span></button>
         </div>
       </article>`;
@@ -427,7 +435,7 @@
   }
   function guessCategory(title) {
     const t = U.norm(title);
-    const rules = [['Супы', /суп|борщ|щи |солянк|бульон|уха|окрошк|рассольник/], ['Салаты', /салат|винегрет|оливье/], ['Десерты', /торт|пирожн|десерт|мусс|печенье|кекс|маффин|тирамису|запеканк[аи] творож|сырник/],
+    const rules = [['Завтраки', /завтрак/], ['Супы', /суп|борщ|щи |солянк|бульон|уха|окрошк|рассольник/], ['Салаты', /салат|винегрет|оливье/], ['Десерты', /торт|пирожн|десерт|мусс|печенье|кекс|маффин|тирамису|запеканк[аи] творож|сырник/],
       ['Выпечка', /пирог|пирожк|хлеб|булоч|пицц|блин|оладь|лепёшк|лепешк|ватруш/], ['Завтраки', /каша|омлет|яичниц|гранол|мюсли|тост/], ['Соусы', /соус|заправк|подлив/], ['Напитки', /компот|морс|смузи|коктейл|какао|лимонад/],
       ['Гарниры', /гарнир|пюре|рис отварн|гречк|булгур|кускус/]];
     const hit = rules.find(([, re]) => re.test(t + ' '));
@@ -768,6 +776,7 @@
     <div class="row wrap shop-actions">
       <button class="btn grow" data-act="shop-share">${icon('share')}<span>Отправить список</span></button>
       <button class="btn grow" data-act="shop-buy-all">${icon('check')}<span>Купили всё (${todo.length})</span></button>
+      ${hook('shoppingActions')}
     </div>
     ${freqHtml}`;
   }
@@ -822,7 +831,8 @@
         if (stage === 'qr') setStage('Ищу QR-код…', 0.05);
         else if (stage === 'prep') setStage('Готовлю фото…', 0.1);
         else if (stage === 'load') setStage('Загружаю распознавание…', 0.1 + p * 0.2);
-        else if (stage === 'ocr') setStage(`Распознаю текст… ${Math.round(p * 100)}%`, 0.3 + p * 0.7);
+        else if (stage === 'ocr') setStage(`Распознаю текст… ${Math.round(p * 100)}%`, 0.3 + p * 0.5);
+        else if (stage === 'ocr2') setStage(`Сумма не сошлась, перепроверяю другим способом… ${Math.round(p * 100)}%`, 0.8 + p * 0.2);
       });
       if (id !== receiptScanId || !$('#modal').open) return; // окно закрыли — результат не нужен
       const cat = catalog();
@@ -834,6 +844,15 @@
           return { name: known ? key : productName(it.name), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true };
         }),
       };
+      // скидка из чека сходится с QR — сразу разносим её по позициям
+      const sum = receiptDraft.items.reduce((s, i) => s + i.total, 0);
+      if (res.discount && res.qr && Math.abs(sum - res.discount - res.qr.sum) < 1 && sum > 0) {
+        const k = res.qr.sum / sum;
+        receiptDraft.items.forEach((i) => { i.total = Math.round(i.total * k * 100) / 100; });
+        const rest = Math.round((res.qr.sum - receiptDraft.items.reduce((s, i) => s + i.total, 0)) * 100) / 100;
+        if (rest) { const big = receiptDraft.items.reduce((a, b) => (b.total > a.total ? b : a)); big.total = Math.round((big.total + rest) * 100) / 100; }
+        receiptDraft.discountApplied = res.discount;
+      }
       openModal(receiptForm(receiptDraft));
     } catch (e) {
       if (id === receiptScanId) { closeModal(); fail(e); }
@@ -849,7 +868,8 @@
       <div class="form-head"><h2>Проверьте чек</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
       <p class="small ${qr ? '' : 'warn-text'}">${qr
         ? `${icon('check', 'tiny')} QR-код: ${esc(U.fmtDate(qr.date))}, ${esc(qr.time)} · <b>${money(qr.sum)} ₽</b>${qr.refund ? ' · <b>возврат</b>' : ''}`
-        : 'QR-код не нашёлся: проверьте дату. Сумму считаю по позициям.'}</p>
+        : 'QR-код не нашёлся: проверьте дату. Сумму считаю по позициям.'}
+        ${d.discountApplied ? `<br>${icon('check', 'tiny')} Скидка ${money(d.discountApplied)} ₽ из чека уже разнесена по позициям.` : ''}</p>
       <div class="grid2">
         <label>Дата покупки<input type="date" name="date" value="${esc(date)}" max="${U.today()}" required></label>
         <label>Магазин<input name="shop" list="dl-shops" value="${esc(d.shop != null ? d.shop : lastShop)}" placeholder="необязательно"></label>
@@ -1328,6 +1348,7 @@
         <button class="btn" data-act="menu-autofill">${icon('bulb')}<span>Заполнить пустое</span></button>
         <button class="btn primary" data-act="menu-shop" ${filled ? '' : 'disabled'}>${icon('cart')}<span>Продукты на неделю в покупки</span></button>
         ${filled ? `<button class="btn danger-ghost" data-act="menu-clear">${icon('trash')}<span>Очистить неделю</span></button>` : ''}
+        ${hook('menuActions')}
       </div>
       <p class="muted small">«Заполнить пустое» подставляет на завтрак завтрак, на обед суп, на ужин второе с гарниром. Чаще выбираются понравившиеся блюда, те, что давно не готовили, и те, для которых продукты уже есть дома. Повторов за неделю нет, прошедшие дни не трогаются.</p>
       <div class="week">${days.map((d, i) => {
@@ -1467,8 +1488,12 @@
              </div>`
           : `<p><b>Локально, только в этом браузере.</b> Чтобы пользоваться вдвоём с телефонов, подключите Supabase по инструкции (файл <code>ИНСТРУКЦИЯ.md</code>). Данные отсюда можно будет перенести: сохраните копию ниже и загрузите её после подключения.</p>`}
       </section>
+      ${isDesktop ? '' : `<section class="card">
+        <h2>Версия для компьютера</h2>
+        <p class="small">На компьютере откройте <a href="desktop.html">${esc(location.origin + location.pathname.replace(/[^/]*$/, ''))}desktop.html</a>. Там меню недели таблицей с перетаскиванием, вставка рецептов и чеков через Ctrl+V, закладка для Instagram, печать, Excel и аналитика расходов. Данные те же.</p>
+      </section>`}
       <section class="card">
-        <h2>Установить на телефон</h2>
+        <h2>${isDesktop ? 'Установить на компьютер' : 'Установить на телефон'}</h2>
         ${matchMedia('(display-mode: standalone)').matches || navigator.standalone
           ? `<p>${icon('check')} Приложение уже установлено.</p>`
           : `${installPrompt ? `<button class="btn primary" data-act="install">${icon('download')}<span>Установить приложение</span></button>` : ''}
@@ -2203,21 +2228,43 @@
     } catch (e) { console.error(e); } finally { fixingKeys = false; }
   }
 
+  // ---------- Открытые функции для версии на компьютере ----------
+  function renderNav() {
+    document.querySelectorAll('[data-nav]').forEach((navEl) => {
+      navEl.innerHTML = NAV.map((n) => `<a href="#/${n.r}" data-r="${n.r}">${icon(n.ic)}<span>${n.label}</span>${n.r === 'shopping' ? '<i class="nbadge" data-badge="shopping" hidden></i>' : ''}</a>`).join('');
+    });
+  }
+  window.App = {
+    isDesktop, ui, saveUI, render, refresh, route, actions, forms, views: extraViews, hooks, NAV, renderNav, icons: I,
+    onReady: (fn) => readyHooks.push(fn),
+    openModal, closeModal, toast, fail, confirmBox, icon, esc,
+    recipeForm, parseIngredients, fillRecipeForm, guessCategory, importRecipeFiles, productName,
+    openReceiptScan, addToShopping, addToPantry, openPickItems, openPicker, addDish,
+    catalog, catOf, pantry, analyze, ingLabel, ingText, scaleOf, recipeSteps, statusBadge, safeHost, lastCooked, cookedText,
+    menuDay, menuId, weekDays, weekDishes, SLOTS, SLOT_CATS, WD, dishTitle, autofillWeek, weekToShopping, inFreezer,
+    priceOf, rub, money, num2, monthLabel, monthIn, unitSelect, servWord, RECIPE_CATS, STATUS, UNITS,
+    install: async () => { if (installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; return true; } return false; },
+    canInstall: () => !!installPrompt,
+    needLogin: () => needLogin,
+  };
+
   // ---------- Запуск ----------
   $('#dl-places').innerHTML = PLACES.map((u) => `<option value="${u}">`).join('');
-  document.querySelectorAll('[data-nav]').forEach((navEl) => {
-    navEl.innerHTML = NAV.map((n) => `<a href="#/${n.r}" data-r="${n.r}">${icon(n.ic)}<span>${n.label}</span>${n.r === 'shopping' ? '<i class="nbadge" data-badge="shopping" hidden></i>' : ''}</a>`).join('');
-  });
+  renderNav();
   $('#settings-btn').innerHTML = icon('sliders');
 
-  (async () => {
+  // старт — когда загружены все скрипты страницы (версия для компьютера подключает свои страницы после app.js)
+  const start = async () => {
     try {
       const res = await Store.init();
       needLogin = res.needLogin;
     } catch (e) { fail(e); }
     render();
     fixRecipeKeys();
-  })();
+    readyHooks.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+  else setTimeout(start, 0);
 
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();

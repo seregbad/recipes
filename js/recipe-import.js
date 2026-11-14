@@ -95,7 +95,8 @@
 
   function parseRecipeText(text, fallbackTitle) {
     const raw = String(text || '').replace(/\r/g, '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim());
-    const lines = raw.filter(Boolean);
+    // строки из одних хэштегов (#сырники #завтрак) — не рецепт; хэштеги в конце строк тоже убираем
+    const lines = raw.filter((l) => l && !/^(#[\wа-яё_-]+[\s,.]*)+$/i.test(l)).map((l) => l.replace(/(\s+#[\wа-яё_-]+)+\s*$/i, ''));
     let title = '', servings = '', time = '';
     const ingredients = [], steps = [];
     let mode = null, titleIdx = -1;
@@ -107,6 +108,7 @@
       const isTitle = /[а-яёa-z]{3,}/i.test(l) && l.length <= 80 && !SERV.test(l) && !TIME.test(l) && !U.parseIngredientLine(l).qty;
       if (isTitle) { title = l.replace(/[.:]$/, ''); titleIdx = i; break; }
     }
+    const titleFromText = !!title;
     if (!title) title = fallbackTitle || 'Рецепт';
 
     lines.forEach((line0, i) => {
@@ -135,7 +137,7 @@
       } else if (looksIngredient(clean) && !looksStep(clean)) ingredients.push(clean);
       else steps.push(clean);
     });
-    return { title, servings, time, ingredients, steps };
+    return { title, titleFromText, servings, time, ingredients, steps };
   }
 
   async function fromFile(file, onProgress) {

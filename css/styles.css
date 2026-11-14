@@ -535,6 +535,7 @@ dialog#modal::backdrop { background: rgba(30, 20, 10, .45); }
 .form { display: flex; flex-direction: column; gap: 12px; }
 .form label { display: flex; flex-direction: column; gap: 5px; font-size: .88rem; font-weight: 600; }
 .form label small { font-weight: 400; }
+.form label.btn { flex-direction: row; font-weight: 600; font-size: .93rem; }
 .form-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .form-head h2 { margin: 0; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
