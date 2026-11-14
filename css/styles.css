@@ -452,6 +452,32 @@ label.btn.loading { opacity: .6; pointer-events: none; }
 .toplist li { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px dashed var(--line); font-size: .92rem; }
 .toplist li:first-child { border-top: 0; }
 
+/* ---------- Рецепт из файла, по пунктам, меню текстом ---------- */
+.page-head h1 { flex: 1; }
+@media (max-width: 420px) { .page-head .btn.grow-0 span { display: none; } }
+.file-import { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.file-import small { flex: 1; min-width: 160px; }
+.ings li { align-items: center; }
+.ing-t { flex: 1; min-width: 0; }
+.ing-acts { display: flex; gap: 4px; flex: none; align-items: center; }
+.ing-acts .mini { min-height: 30px; }
+.pi-rows { display: flex; flex-direction: column; gap: 8px; max-height: 58vh; overflow-y: auto; }
+.pi-row { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.pi-top small { display: block; color: var(--muted); font-size: .76rem; }
+.pi-ctl { display: grid; grid-template-columns: 70px 92px 1fr; gap: 6px; align-items: center; }
+.pi-ctl input, .pi-ctl select { min-height: 36px; padding: 5px 8px; font-size: 15px; }
+.seg3 { display: flex; background: var(--surface-2); border-radius: 9px; padding: 2px; }
+.seg3 label { flex: 1; position: relative; }
+.seg3 input { position: absolute; opacity: 0; pointer-events: none; }
+.seg3 span { display: block; text-align: center; padding: 6px 4px; border-radius: 7px; font-size: .82rem; font-weight: 600; color: var(--muted); cursor: pointer; }
+.seg3 input:checked + span { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.seg3 input[value="buy"]:checked + span { color: var(--accent); }
+.seg3 input[value="home"]:checked + span { color: var(--ok); }
+.row .grow { flex: 1; }
+.pick-form { display: flex; flex-direction: column; gap: 8px; }
+.pick-form .search { margin-bottom: 0; }
+.dish-text { border: 0; background: none; padding: 0; color: var(--text); font: inherit; font-style: italic; cursor: pointer; text-align: left; }
+
 /* ---------- Чеки ---------- */
 .progress { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .progress i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width .3s; }
