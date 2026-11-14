@@ -141,6 +141,14 @@
   }
 
   async function fromFile(file, onProgress) {
+    // сохранённая страница сайта — разбираем по структуре, как загрузку по ссылке
+    if (/^html?$/.test(ext(file)) && window.RecipeExtract) {
+      const r = RecipeExtract.fromHtml(await readText(file));
+      if (r.ingredients.length >= 2 || r.steps.length >= 2) {
+        return { title: r.title || baseName(file), titleFromText: true, servings: /^\d+$/.test(r.servings) ? r.servings + ' ' + U.plural(+r.servings, 'порция', 'порции', 'порций') : r.servings,
+          time: r.time, ingredients: r.ingredients, steps: r.steps, source: file.name, text: '' };
+      }
+    }
     const text = await extractText(file, onProgress);
     if (!text || text.replace(/\s/g, '').length < 10) throw new Error(`В файле «${file.name}» не нашлось текста`);
     return { ...parseRecipeText(text, baseName(file)), source: file.name, text };

@@ -284,22 +284,136 @@
     return `<span class="badge st-${s}">${s === 'liked' ? icon('heart', 'fill') : ''}${esc(STATUS[s])}</span>`;
   };
   function safeHost(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return ''; } }
-  // ---------- Пересчёт на порции ----------
-  const scaleFor = {}; // рецепт → выбранное число порций (живёт, пока открыто приложение)
-  const baseServings = (r) => { const m = String(r.servings || '').match(/\d+/); return m ? +m[0] : 0; };
-  const scaleOf = (r) => { const b = baseServings(r); return b && scaleFor[r.id] ? scaleFor[r.id] / b : 1; };
-  const servWord = (n) => `${n} ${U.plural(n, 'порция', 'порции', 'порций')}`;
-  const ingText = (i, f = 1) => (f !== 1 && i.qty
-    ? [i.name, U.fmtQty(U.scaleQty(i.qty, f), i.unit)].filter(Boolean).join(' — ')
-    : i.raw || [i.name, U.fmtQty(i.qty, i.unit)].filter(Boolean).join(' — '));
+  // ---------- Пересчёт рецепта ----------
+  // f — общий множитель (порции или «подогнать под продукт»), over — правки отдельных ингредиентов.
+  // Живёт, пока открыто приложение; сохранить в рецепт можно при «Приготовили».
+  const adj = {};
+  const baseServings = (r) => { const m = String(r.servings || '').match(/\d+(?:[.,]\d+)?/); return m ? parseFloat(m[0].replace(',', '.')) : 0; };
+  const scaleOf = (r) => (adj[r.id] ? adj[r.id].f : 1);
+  const adjOf = (r) => (adj[r.id] = adj[r.id] || { f: 1, over: {} });
+  const hasAdj = (r) => !!adj[r.id] && (Math.abs(adj[r.id].f - 1) > 0.001 || Object.keys(adj[r.id].over).length > 0);
+  const servWord = (n) => `${U.fmtNum(n)} ${Number.isInteger(n) ? U.plural(n, 'порция', 'порции', 'порций') : 'порции'}`;
+  // как называть продукт в строке: «200 г муки» → «мука» (из справочника), иначе как написано
+  const nameOf = (i) => (i.raw && /^\s*\d/.test(i.raw) && i.key ? i.key : i.name || i.raw || '');
+  // количество с учётом пересчёта и правок
+  function effIng(r, i, n) {
+    const a = adj[r.id];
+    if (a && a.over[n]) return { ...i, qty: a.over[n].qty, unit: a.over[n].unit, changed: true, was: Measures.scaleQty(i.qty, a.f, i.unit, ingLabel(i)) };
+    const f = scaleOf(r);
+    return f === 1 || !i.qty ? i : { ...i, qty: Measures.scaleQty(i.qty, f, i.unit, ingLabel(i)), scaled: true };
+  }
+  const gram = (i, qty, unit) => { const h = Measures.gramHint(ingLabel(i), qty, unit); return h ? ` <small class="gram">(${esc(h)})</small>` : ''; };
+  // строка ингредиента: название — количество (кнопка «изменить») (≈ граммы)
+  function ingLineHTML(r, i, n, clickable = true) {
+    const e = effIng(r, i, n);
+    if (!e.qty) return esc(i.raw || [i.name, i.unit].filter(Boolean).join(' — '));
+    const amount = Measures.fmt(e.qty, e.unit);
+    const was = e.changed ? `<s class="was">${esc(Measures.fmt(e.was, i.unit))}</s> ` : '';
+    const amt = clickable
+      ? `<button class="amt ${e.changed ? 'changed' : e.scaled ? 'scaled' : ''}" data-act="ing-amt" data-id="${esc(r.id)}" data-i="${n}" title="Сколько у вас? Нажмите, чтобы изменить">${esc(amount)}</button>`
+      : `<b class="amt-t">${esc(amount)}</b>`;
+    return `${esc(nameOf(i))} — ${was}${amt}${gram(i, e.qty, e.unit)}`;
+  }
+  // текст строки для печати и списков: «мука — 4 ст. л. (≈100 г)»
+  function ingPlain(r, i, n) {
+    const e = effIng(r, i, n);
+    if (!e.qty) return i.raw || i.name;
+    const h = Measures.gramHint(ingLabel(i), e.qty, e.unit);
+    return `${nameOf(i)} — ${Measures.fmt(e.qty, e.unit)}${h ? ` (${h})` : ''}`;
+  }
+  const ingText = (i, f = 1) => (f !== 1 && i.qty ? [nameOf(i), Measures.fmt(Measures.scaleQty(i.qty, f, i.unit, ingLabel(i)), i.unit)].join(' — ') : i.raw || [i.name, Measures.fmt(i.qty, i.unit)].filter(Boolean).join(' — '));
   function servingsStepper(r) {
-    const b = baseServings(r);
-    if (!b) return '';
-    const cur = scaleFor[r.id] || b;
-    return `<div class="serv" role="group" aria-label="Порции">
+    const b = baseServings(r), f = scaleOf(r);
+    const reset = hasAdj(r) ? `<button class="linklike small" data-act="adj-reset" data-id="${esc(r.id)}">вернуть как в рецепте</button>` : '';
+    if (!b) return f !== 1 || reset ? `<div class="serv-row"><span class="badge">×${U.roundNice(f)}</span> ${reset}</div>` : '';
+    const cur = Math.round(b * f * 2) / 2;
+    return `<div class="serv-row"><div class="serv" role="group" aria-label="Порции">
       <button class="icon-btn" data-act="serv" data-id="${esc(r.id)}" data-d="-1" ${cur <= 1 ? 'disabled' : ''} aria-label="Меньше порций">${icon('minus')}</button>
       <span>${servWord(cur)}</span>
-      <button class="icon-btn" data-act="serv" data-id="${esc(r.id)}" data-d="1" aria-label="Больше порций">${icon('plus')}</button></div>`;
+      <button class="icon-btn" data-act="serv" data-id="${esc(r.id)}" data-d="1" aria-label="Больше порций">${icon('plus')}</button></div> ${reset}</div>`;
+  }
+  // продукт, которого дома меньше всего относительно рецепта (если из-за него рецепт целиком не получится)
+  function limiting(r) {
+    let best = null;
+    (r.ingredients || []).forEach((i, n) => {
+      if (!i.qty || i.unit === 'по вкусу' || U.isStaple(ingLabel(i))) return;
+      const p = pantry().find((x) => U.sameIng(x.name, ingLabel(i)) || U.sameIng(x.name, i.name));
+      if (!p || !p.qty) return;
+      const ratio = Measures.ratioHaveNeed(ingLabel(i), p.qty, p.unit, i.qty, i.unit);
+      if (ratio && ratio > 0 && (!best || ratio < best.ratio)) best = { i, n, p, ratio };
+    });
+    return best && best.ratio < scaleOf(r) - 0.01 ? best : null;
+  }
+  function limitHTML(r) {
+    const l = limiting(r);
+    if (!l) return '';
+    const b = baseServings(r);
+    const enough = b ? `хватит примерно на ${servWord(Math.max(0.5, Math.floor(b * l.ratio * 2) / 2))}` : `хватит на ${Math.round(l.ratio * 100)}% рецепта`;
+    return `<div class="limit">${icon('alert')}<span><b>${esc(l.p.name)}</b>: дома ${esc(Measures.fmt(l.p.qty, l.p.unit))}, а нужно ${esc(Measures.fmt(effIng(r, l.i, l.n).qty, l.i.unit))}${gram(l.i, effIng(r, l.i, l.n).qty, l.i.unit)} — ${enough}.</span>
+      <button class="btn small" data-act="adj-limit" data-id="${esc(r.id)}" data-f="${l.ratio}">Пересчитать под ${esc(Measures.fmt(l.p.qty, l.p.unit))}</button></div>`;
+  }
+  // шаги с пересчитанными граммовками (если включено)
+  const stepHTML = (r, t) => (ui.scaleSteps === false ? esc(t) : Measures.scaleStepHTML(t, scaleOf(r), esc));
+  const scaleStepsToggle = (r) => (scaleOf(r) !== 1 && /\d\s*(г|кг|мл|л|ст\.|ч\.|стакан)/i.test(r.steps || '')
+    ? `<label class="check small"><input type="checkbox" data-act="toggle-scale-steps" ${ui.scaleSteps === false ? '' : 'checked'}> Пересчитывать граммовки и в тексте шагов</label>` : '');
+  const qtyNum = (s) => String(s || '').trim().replace(/\s+/g, '').replace(',', '.');
+  function adjSummary(r) {
+    const a = adj[r.id], b = baseServings(r), parts = [];
+    if (Math.abs(a.f - 1) > 0.001) parts.push(b ? servWord(Math.round(b * a.f * 2) / 2) : `×${U.roundNice(a.f)}`);
+    const k = Object.keys(a.over).length;
+    if (k) parts.push(`изменено ${k} ${U.plural(k, 'продукт', 'продукта', 'продуктов')}`);
+    return parts.join(', ');
+  }
+  // рецепт с моими количествами (для «Сохранить в рецепт»)
+  function adjustedRecipe(r) {
+    const a = adj[r.id], b = baseServings(r), old = [];
+    const ingredients = (r.ingredients || []).map((i, n) => {
+      const e = effIng(r, i, n);
+      if (!i.qty || e.qty === i.qty && e.unit === i.unit) return i;
+      old.push(i.raw || [i.name, Measures.fmt(i.qty, i.unit)].join(' — '));
+      return { ...i, qty: e.qty, unit: e.unit, raw: `${nameOf(i)} — ${Measures.fmt(e.qty, e.unit)}` };
+    });
+    const out = { ingredients };
+    if (b && Math.abs(a.f - 1) > 0.001) out.servings = servWord(Math.round(b * a.f * 2) / 2);
+    if (Math.abs(a.f - 1) > 0.001 && ui.scaleSteps !== false && r.steps) {
+      out.steps = Measures.scaleStepHTML(r.steps, a.f, (x) => x).replace(/<mark[^>]*>|<\/mark>/g, '');
+    }
+    if (old.length) out.notes = [r.notes, `Было в рецепте до правки (${U.fmtDate ? U.fmtDate(U.today()) : U.today()}${r.servings ? `, ${r.servings}` : ''}):\n` + old.map((x) => '• ' + x).join('\n')].filter(Boolean).join('\n\n');
+    return out;
+  }
+  // окно «сколько у вас?» по одному ингредиенту
+  function adjForm(r, n) {
+    const i = r.ingredients[n], e = effIng(r, i, n), name = ingLabel(i);
+    const units = [i.unit];
+    if (Measures.gramsPerUnit(name, i.unit)) units.push('г', 'кг');
+    if (i.unit === 'мл' || i.unit === 'л') units.push('мл', 'л');
+    const opts = [...new Set(units)].map((u) => `<option value="${esc(u)}" ${u === e.unit ? 'selected' : ''}>${esc(u || 'шт')}</option>`).join('');
+    const h = Measures.gramHint(name, i.qty, i.unit);
+    const p = pantry().find((x) => U.sameIng(x.name, name) || U.sameIng(x.name, i.name));
+    return `<form class="form" data-form="adj">
+      <div class="form-head"><h2>${esc(nameOf(i))}: сколько у вас?</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+      <input type="hidden" name="id" value="${esc(r.id)}"><input type="hidden" name="i" value="${n}">
+      <p class="muted small">По рецепту: <b>${esc(Measures.fmt(i.qty, i.unit))}</b>${h ? ` (${esc(h)})` : ''}${r.servings ? ` на ${esc(r.servings)}` : ''}.${p && p.qty ? ` Дома записано: ${esc(Measures.fmt(p.qty, p.unit))}.` : ''}</p>
+      <div class="grid2"><label>Количество<input name="qty" inputmode="decimal" autocomplete="off" value="${esc(String(e.qty).replace('.', ','))}" required></label>
+        <label>Единица<select name="unit">${opts}</select></label></div>
+      <div class="adj-btns">
+        <button class="btn primary block" data-adj="scale">${icon('repeat')}<span>Пересчитать весь рецепт под это количество</span></button>
+        <button type="button" class="btn block" data-act="adj-one">Изменить только этот продукт</button>
+        ${adj[r.id] && adj[r.id].over[n] ? `<button type="button" class="btn block danger-ghost" data-act="adj-one-reset">Вернуть как в рецепте</button>` : ''}
+      </div>
+    </form>`;
+  }
+  const adjRead = (f) => { const fd = new FormData(f); return { r: Store.get('recipes', fd.get('id')), n: +fd.get('i'), qty: qtyNum(fd.get('qty')), unit: fd.get('unit') || '' }; };
+  function adjScale(f) {
+    const { r, n, qty, unit } = adjRead(f);
+    const i = r.ingredients[n];
+    const ratio = Measures.ratioHaveNeed(ingLabel(i), qty, unit, i.qty, i.unit);
+    if (!ratio || !isFinite(ratio) || ratio <= 0) { toast('Не получилось сравнить с рецептом — проверьте число'); return; }
+    const k = Math.min(20, Math.max(0.05, Math.round(ratio * 100) / 100));
+    adj[r.id] = { f: k, over: unit !== i.unit ? { [n]: { qty, unit } } : {} };
+    closeModal(); refresh();
+    const b = baseServings(r);
+    toast(b ? `Пересчитали: получится ${servWord(Math.round(b * k * 2) / 2)}` : `Пересчитали: ×${U.roundNice(k)}`);
   }
 
   const lastCooked = (r) => (r.cooked && r.cooked.length ? r.cooked.reduce((m, d) => (d > m ? d : m)) : '');
@@ -344,6 +458,8 @@
           <div class="card-head"><h2>Ингредиенты</h2>
             ${a.total ? `<span class="muted small">дома есть ${a.have} из ${a.total}</span>` : ''}</div>
           ${servingsStepper(r)}
+          ${limitHTML(r)}
+          <p class="muted small hint-amt">Нажмите на количество, если у вас продукта больше или меньше.</p>
           <ul class="ings">
             ${(r.ingredients || []).map((i, n) => {
               const ignored = ui.ignoreStaples && (U.isStaple(ingLabel(i)) || i.unit === 'по вкусу');
@@ -351,7 +467,7 @@
               const listed = miss && inShoppingList(ingLabel(i));
               return `<li class="${ignored ? 'staple' : miss ? 'miss' : 'have'}">
                 <span class="dot">${ignored ? '' : miss ? icon('x') : icon('check')}</span>
-                <span class="ing-t">${esc(ingText(i, scaleOf(r)))}</span>
+                <span class="ing-t">${ingLineHTML(r, i, n)}</span>
                 ${miss ? `<span class="ing-acts">
                   <button class="mini" data-act="ing-home" data-id="${esc(r.id)}" data-i="${n}" title="Это есть дома">дома</button>
                   ${listed ? '<em class="tag">в списке</em>' : `<button class="mini" data-act="ing-shop" data-id="${esc(r.id)}" data-i="${n}" title="Добавить в покупки">${icon('cart')}</button>`}
@@ -362,7 +478,8 @@
         </section>
 
         ${steps.length ? `<section class="card steps-card"><h2>Приготовление</h2>
-          ${steps.length > 1 ? `<ol class="steps">${steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>` : `<p class="pre">${esc(steps[0])}</p>`}</section>` : ''}
+          ${scaleStepsToggle(r)}
+          ${steps.length > 1 ? `<ol class="steps">${steps.map((t) => `<li>${stepHTML(r, t)}</li>`).join('')}</ol>` : `<p class="pre">${stepHTML(r, steps[0])}</p>`}</section>` : ''}
         ${r.notes ? `<section class="card notes-card"><h2>Заметки</h2><p class="pre">${esc(r.notes)}</p></section>` : ''}
 
         <div class="actions-row">
@@ -1188,12 +1305,15 @@
         <div><h1>${esc(r.title)}</h1><small class="muted">${awakeNote}</small></div>
       </div>
       ${(r.ingredients || []).length ? `<section class="cook-ings"><h2>Ингредиенты <small class="muted">нажмите, когда положили</small></h2>
-        <div class="cook-ing-list">${r.ingredients.map((i, n) => `<button class="cing ${cookState.done.has(n) ? 'done' : ''}" data-act="cook-ing" data-i="${n}">
-          <span class="dot">${icon('check')}</span><span>${esc(ingText(i, scaleOf(r)))}</span></button>`).join('')}</div>
-        ${servingsStepper(r)}</section>` : ''}
+        ${servingsStepper(r)}
+        ${limitHTML(r)}
+        <div class="cook-ing-list">${r.ingredients.map((i, n) => `<div class="cing ${cookState.done.has(n) ? 'done' : ''}" role="button" tabindex="0" data-act="cook-ing" data-i="${n}">
+          <span class="dot">${icon('check')}</span><span class="ing-t">${ingLineHTML(r, i, n)}</span></div>`).join('')}</div>
+        <p class="muted small hint-amt">Количество можно нажать и поправить под то, что есть.</p></section>` : ''}
       <section class="cook-steps">
+        ${scaleStepsToggle(r)}
         ${steps.length ? steps.map((t, n) => `<div class="cstep ${n === cur ? 'cur' : ''} ${n < cur ? 'past' : ''}" data-act="cook-step" data-i="${n}">
-          <b>Шаг ${n + 1} из ${steps.length}</b><p>${esc(t)}</p>
+          <b>Шаг ${n + 1} из ${steps.length}</b><p>${stepHTML(r, t)}</p>
           ${stepTimers(t).map((tm) => `<button class="btn small timer-btn" data-act="timer-start" data-sec="${tm.sec}" data-label="${esc(`${r.title}: ${tm.label}`)}">${icon('clock')}<span>${esc(tm.label)}</span></button>`).join('')}
         </div>`).join('') : `<div class="empty small">Шаги приготовления не записаны.${r.url ? ` <a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Открыть рецепт на сайте</a>` : ''}</div>`}
       </section>
@@ -1249,11 +1369,12 @@
   function writeOffPlan(r) {
     const plan = [];
     const used = new Set();
-    for (const i of r.ingredients || []) {
+    for (const [n, i0] of (r.ingredients || []).entries()) {
+      const i = effIng(r, i0, n); // фактическое количество — с пересчётом и правками
       const p = pantry().find((x) => !used.has(x.id) && (U.sameIng(x.name, ingLabel(i)) || U.sameIng(x.name, i.name)));
       if (!p) continue;
       used.add(p.id);
-      const left = U.subtractQty(p.qty, p.unit, U.scaleQty(i.qty, scaleOf(r)), i.unit);
+      const left = Measures.subtractSmart(ingLabel(i), p.qty, p.unit, i.qty, i.unit);
       if (left !== null && left > 0) plan.push({ p, mode: 'sub', left, checked: true, text: `${U.fmtQty(p.qty, p.unit)} → ${U.fmtQty(U.fmtNum(left), p.unit)}` });
       else if (left !== null) plan.push({ p, mode: 'remove', checked: true, text: 'закончится' });
       else plan.push({ p, mode: 'remove', checked: false, text: 'закончилось?' });
@@ -1278,6 +1399,7 @@
           <span><b>${esc(x.p.name)}</b> <span class="muted">${esc(x.text)}</span></span></label>`).join('')}
         <label class="check"><input type="checkbox" name="toshop" checked> То, что закончилось, добавить в покупки</label>
       </div>` : `<p class="muted small">Продуктов этого рецепта в «Есть дома» нет, списывать нечего.</p>`}
+      ${hasAdj(r) ? `<label class="check"><input type="checkbox" name="saveqty"> <span>Сохранить мои количества в рецепт <small class="muted">(${esc(adjSummary(r))}; старые запишутся в заметки)</small></span></label>` : ''}
       <div class="form-actions"><button type="button" class="btn" data-act="close">Отмена</button><button class="btn primary">Сохранить</button></div>
     </form>`;
   }
@@ -1286,7 +1408,9 @@
     const fd = new FormData(f);
     const r = Store.get('recipes', fd.get('id'));
     const date = fd.get('date') || U.today();
-    await Store.save('recipes', { ...r, cooked: [...(r.cooked || []), date].sort(), status: fd.get('status') || r.status || 'new' });
+    let upd = { ...r, cooked: [...(r.cooked || []), date].sort(), status: fd.get('status') || r.status || 'new' };
+    if (fd.get('saveqty') && hasAdj(r)) { upd = { ...upd, ...adjustedRecipe(r) }; delete adj[r.id]; }
+    await Store.save('recipes', upd);
     const finished = [];
     for (const cb of f.querySelectorAll('input[name="wo"]:checked')) {
       const p = Store.get('pantry', cb.value);
@@ -1561,8 +1685,11 @@
     'recipe-to-shop': async (el) => {
       const r = Store.get('recipes', el.dataset.id);
       const a = analyze(r, [...pantry().map((p) => p.name), ...(route().name === 'match' ? ui.matchExtra || [] : [])]);
-      const f = scaleOf(r);
-      openPickItems(`Не хватает для «${r.title}»`, a.missing.map((i) => ({ name: ingLabel(i), qty: U.scaleQty(i.qty, f), unit: i.unit === 'по вкусу' ? '' : i.unit, note: '', src: `r:${r.id}:${scaleFor[r.id] || ''}` })));
+      const src = `r:${r.id}:${hasAdj(r) ? U.roundNice(scaleOf(r)) : ''}`;
+      openPickItems(`Не хватает для «${r.title}»`, a.missing.map((i) => {
+        const e = effIng(r, i, r.ingredients.indexOf(i));
+        return { name: ingLabel(i), qty: e.qty, unit: e.unit === 'по вкусу' ? '' : e.unit, note: Measures.gramHint(ingLabel(i), e.qty, e.unit), src };
+      }));
     },
     // один ингредиент рецепта: «есть дома» или «купить»
     'ing-home': async (el) => {
@@ -1571,8 +1698,9 @@
       toast(`«${ingLabel(i)}»: есть дома`);
     },
     'ing-shop': async (el) => {
-      const r = Store.get('recipes', el.dataset.id), i = r.ingredients[+el.dataset.i];
-      await addToShopping([{ name: ingLabel(i), qty: U.scaleQty(i.qty, scaleOf(r)), unit: i.unit === 'по вкусу' ? '' : i.unit, note: r.title, src: `r:${r.id}:${scaleFor[r.id] || ''}` }]);
+      const r = Store.get('recipes', el.dataset.id), i = r.ingredients[+el.dataset.i], e = effIng(r, i, +el.dataset.i);
+      const g = Measures.gramHint(ingLabel(i), e.qty, e.unit);
+      await addToShopping([{ name: ingLabel(i), qty: e.qty, unit: e.unit === 'по вкусу' ? '' : e.unit, note: [r.title, g].filter(Boolean).join(', '), src: `r:${r.id}:${hasAdj(r) ? U.roundNice(scaleOf(r)) : ''}` }]);
       toast(`«${ingLabel(i)}» в покупках`);
     },
     'pi-all': (el) => {
@@ -1608,10 +1736,34 @@
     },
     'rc-lump': (el) => saveReceipt(el.closest('form'), true),
     serv: (el) => {
-      const r = Store.get('recipes', el.dataset.id);
-      scaleFor[r.id] = Math.max(1, (scaleFor[r.id] || baseServings(r)) + Number(el.dataset.d));
+      const r = Store.get('recipes', el.dataset.id), b = baseServings(r);
+      if (!b) return;
+      const cur = Math.round(b * scaleOf(r) * 2) / 2;
+      const next = Math.max(1, Number(el.dataset.d) > 0 ? Math.floor(cur) + 1 : Math.ceil(cur) - 1);
+      adjOf(r).f = next / b;
       refresh();
     },
+    // ----- правка количеств -----
+    'ing-amt': (el) => openModal(adjForm(Store.get('recipes', el.dataset.id), +el.dataset.i)),
+    'adj-one': (el) => {
+      const f = el.closest('form');
+      const { r, n, qty, unit } = adjRead(f);
+      if (!/^\d+(?:\.\d+)?(?:[-–]\d+(?:\.\d+)?)?$|^\d+\/\d+$/.test(qty)) { toast('Впишите число, например 150 или 1,5'); return; }
+      adjOf(r).over[n] = { qty, unit };
+      closeModal(); refresh();
+    },
+    'adj-one-reset': (el) => {
+      const { r, n } = adjRead(el.closest('form'));
+      if (adj[r.id]) delete adj[r.id].over[n];
+      closeModal(); refresh();
+    },
+    'adj-reset': (el) => { delete adj[el.dataset.id]; refresh(); toast('Количества как в рецепте'); },
+    'adj-limit': (el) => {
+      const r = Store.get('recipes', el.dataset.id);
+      adj[r.id] = { f: Math.max(0.05, Math.floor(parseFloat(el.dataset.f) * 100) / 100), over: {} };
+      refresh();
+    },
+    'toggle-scale-steps': (el) => { ui.scaleSteps = el.checked; saveUI(); refresh(); },
     'seed-qty': async () => {
       const seeds = new Map((window.SEED_RECIPES || []).map((s) => [U.norm(s[0]), s]));
       const targets = Store.all('recipes').filter((r) => seeds.has(U.norm(r.title)) && !(r.ingredients || []).some((i) => i.qty));
@@ -1922,6 +2074,7 @@
       toast('Рецепт сохранён');
     },
     cooked: (f) => saveCooked(f),
+    adj: (f) => adjScale(f),
     'pick-items': async (f) => {
       const buy = [], home = [];
       pickItemsData.forEach((it, i) => {
@@ -2240,7 +2393,7 @@
     openModal, closeModal, toast, fail, confirmBox, icon, esc,
     recipeForm, parseIngredients, fillRecipeForm, guessCategory, importRecipeFiles, productName,
     openReceiptScan, addToShopping, addToPantry, openPickItems, openPicker, addDish,
-    catalog, catOf, pantry, analyze, ingLabel, ingText, scaleOf, recipeSteps, statusBadge, safeHost, lastCooked, cookedText,
+    catalog, catOf, pantry, analyze, ingLabel, ingText, scaleOf, effIng, ingPlain, ingLineHTML, nameOf, stepHTML, recipeSteps, statusBadge, safeHost, lastCooked, cookedText,
     menuDay, menuId, weekDays, weekDishes, SLOTS, SLOT_CATS, WD, dishTitle, autofillWeek, weekToShopping, inFreezer,
     priceOf, rub, money, num2, monthLabel, monthIn, unitSelect, servWord, RECIPE_CATS, STATUS, UNITS,
     install: async () => { if (installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; return true; } return false; },

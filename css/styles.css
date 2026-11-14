@@ -413,7 +413,27 @@ body.cooking { padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
 .serv span { min-width: 92px; text-align: center; font-weight: 600; font-size: .92rem; }
 .serv .icon-btn { width: 38px; height: 38px; }
 .serv .icon-btn:disabled { opacity: .35; }
-.cook .serv { margin-bottom: 18px; }
+.cook .serv { margin-bottom: 0; }
+/* пересчёт количеств и граммы */
+.serv-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 6px; }
+.serv-row .serv { margin: 0; }
+.cook .serv-row { margin-bottom: 12px; }
+.amt { border: 0; border-bottom: 1px dashed var(--accent); background: none; padding: 0 1px; font: inherit; font-weight: 600; color: inherit; cursor: pointer; border-radius: 0; }
+.amt:hover, .amt:focus-visible { background: var(--surface-2); outline: none; }
+.amt.scaled { color: var(--accent); }
+.amt.changed { color: var(--ok); border-bottom-style: solid; border-color: var(--ok); }
+.amt-t { font-weight: 600; }
+.ings .was, .cing .was { color: var(--muted); font-weight: 400; }
+small.gram { color: var(--muted); font-size: .78em; font-weight: 400; white-space: nowrap; }
+.cing.done .amt, .cing.done small.gram { color: inherit; }
+.hint-amt { margin: 0 0 6px; }
+.limit { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; background: var(--warn-soft, #fff4dc); border-radius: 10px; padding: 9px 11px; margin: 4px 0 10px; font-size: .9rem; }
+.limit > .ic { width: 18px; height: 18px; flex: none; color: var(--warn, #b7791f); margin-top: 1px; }
+.limit > span { flex: 1; min-width: 180px; }
+mark.scaled { background: var(--warn-soft, #fff1c2); color: inherit; border-radius: 4px; padding: 0 2px; }
+.adj-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.adj-btns .btn { justify-content: center; }
+.cook-steps > .check { margin-bottom: 4px; }
 
 /* ---------- Фото ---------- */
 .photo-field { display: flex; gap: 12px; align-items: center; }

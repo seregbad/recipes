@@ -68,13 +68,25 @@
   function nextReceipt() { if (receiptQueue.length && !$('#modal').open) App.openReceiptScan(receiptQueue.shift()); }
   $('#modal').addEventListener('close', () => setTimeout(nextReceipt, 300));
 
-  async function handleIncoming({ files = [], text = '' }) {
+  // кусок страницы, скопированный из браузера: разбираем по структуре (списки, таблицы, заголовки)
+  function fromClipboardHtml(html, text) {
+    if (!html || !/<(li|tr|p|h[1-6])[\s>]/i.test(html)) return null;
+    const r = RecipeExtract.fromHtml(html);
+    if (r.ingredients.length < 2 && r.steps.length < 2) return null;
+    const t = RecipeImport.parseRecipeText(text, '');
+    return { title: r.title && r.title !== 'Рецепт' ? r.title : t.titleFromText ? t.title : '', titleFromText: !!(r.title || t.titleFromText),
+      ingredients: r.ingredients.length ? r.ingredients : t.ingredients, steps: r.steps.length ? r.steps : t.steps, servings: r.servings || t.servings, time: r.time || t.time };
+  }
+
+  async function handleIncoming({ files = [], text = '', html = '' }) {
     try {
       // форма рецепта открыта — дописываем в неё
       const f = recipeFormOpen();
       if (f) {
+        const fromHtml = !files.length && fromClipboardHtml(html, text);
         const t = files.length ? await textFromFiles(files.filter((x) => !isSheet(x))) : text;
-        if (t.trim()) appendToForm(f, RecipeImport.parseRecipeText(t, ''));
+        if (fromHtml) appendToForm(f, fromHtml);
+        else if (t.trim()) appendToForm(f, RecipeImport.parseRecipeText(t, ''));
         return;
       }
       if ($('#modal').open) return; // другое окно (чек, заготовка) — не мешаем
@@ -86,6 +98,8 @@
           else toast('Ссылка вставлена. Загрузка по ссылке работает с подключённой базой');
           return;
         }
+        const fromHtml = fromClipboardHtml(html, text);
+        if (fromHtml) { openRecipeDraft({ ...fromHtml, title: fromHtml.title || 'Рецепт' }, { notes: 'Вставлено со страницы' }); return; }
         openRecipeDraft(RecipeImport.parseRecipeText(s, 'Рецепт'), { notes: 'Вставлено из буфера обмена' });
         return;
       }
@@ -127,7 +141,7 @@
     if (!files.length && !text.trim()) return;
     if (App.needLogin()) return;
     e.preventDefault();
-    handleIncoming({ files, text });
+    handleIncoming({ files, text, html: cd.getData('text/html') || '' });
   });
 
   // перетаскивание файлов в окно
@@ -155,7 +169,9 @@
   function bookmarkletCode() {
     // выполняется на чужой странице: берёт выделенный текст, описание поста Instagram,
     // разметку рецепта (JSON-LD) или текст статьи, и открывает приложение с этими данными
-    const src = `(()=>{const A=${JSON.stringify(appUrl())};const q=s=>document.querySelector(s);const m=n=>((q('meta[property="'+n+'"]')||q('meta[name="'+n+'"]')||{}).content||'');const sel=String(getSelection()).trim();const ld=[...document.querySelectorAll('script[type="application/ld+json"]')].map(s=>s.textContent).filter(t=>/Recipe/.test(t)).map(t=>t.slice(0,60000));let x=sel;if(!x&&/instagram\\.com/.test(location.host)){const h=q('article h1')||q('main h1')||q('h1');x=h?h.innerText:m('og:description');}if(!x&&!ld.length){const a=q('article')||q('main')||document.body;x=a.innerText;}const d={u:location.href,t:m('og:title')||document.title,i:m('og:image'),x:(x||'').slice(0,15000),l:ld};const b=btoa(unescape(encodeURIComponent(JSON.stringify(d)))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');window.open(A+'#/import?d='+b,'kuhnya');})()`;
+    // Страница целиком (без скриптов, стилей и картинок-вставок) сжимается gzip и передаётся в адресе;
+    // разбирает её приложение тем же разборщиком, что и загрузка по ссылке.
+    const src = `(async()=>{const A=${JSON.stringify(appUrl())};const q=s=>document.querySelector(s);const m=n=>((q('meta[property="'+n+'"]')||q('meta[name="'+n+'"]')||{}).content||'');let x=String(getSelection()).trim(),h='';if(!x&&/instagram\\.com/.test(location.host)){const e=q('article h1')||q('main h1')||q('h1');x=e?e.innerText:m('og:description');}if(!x){const c=document.documentElement.cloneNode(true);c.querySelectorAll('script:not([type="application/ld+json"]),style,noscript,svg,iframe,link,video,audio,canvas,source,template').forEach(e=>e.remove());c.querySelectorAll('*').forEach(e=>{for(const a of [...e.attributes])if(!/^(class|id|itemprop|itemtype|itemscope|content|property|name|type|src|href|datetime)$/.test(a.name)||/^data:/.test(a.value))e.removeAttribute(a.name)});h=c.outerHTML.slice(0,3000000);}const s=JSON.stringify({u:location.href,t:m('og:title')||document.title,i:m('og:image'),x:x.slice(0,15000),h});let b;if(window.CompressionStream){const u=new Uint8Array(await new Response(new Blob([s]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());let n='';for(let i=0;i<u.length;i+=32768)n+=String.fromCharCode.apply(null,u.subarray(i,i+32768));b='z'+btoa(n);}else b=btoa(unescape(encodeURIComponent(s)));window.open(A+'#/import?d='+b.replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,''),'kuhnya');})()`;
     return 'javascript:' + encodeURIComponent(src);
   }
 
@@ -186,9 +202,24 @@
     return t.split('\n').filter((l) => !/^\s*(#[\wа-яё_]+\s*)+$/i.test(l)).join('\n');
   }
   function openFromPage(d) {
-    let rec = null;
-    for (const block of d.l || []) { try { rec = findRecipe(JSON.parse(block)); } catch (e) { /* битый JSON */ } if (rec) break; }
     const host = (() => { try { return new URL(d.u).hostname.replace(/^www\./, ''); } catch (e) { return ''; } })();
+    // новая закладка присылает саму страницу — разбираем общим разборщиком
+    if (d.h) {
+      const r = RecipeExtract.fromHtml(d.h);
+      if (r.ingredients.length || r.steps.length) {
+        const abs = (u) => { try { return u ? new URL(u, d.u).href : ''; } catch (e) { return ''; } };
+        openRecipeDraft({ title: r.title || d.t, ingredients: r.ingredients, steps: r.steps, time: r.time,
+          servings: /^\d+$/.test(r.servings) ? App.servWord(+r.servings) : r.servings },
+        { url: d.u, image: abs(r.image) || abs(d.i), notes: `С сайта ${host}` });
+        toast(`Рецепт со страницы: ингредиентов ${r.ingredients.length}, шагов ${r.steps.length}. Проверьте и сохраните`);
+        return;
+      }
+      // структуры нет — пробуем как обычный текст страницы
+      if (!d.x) { const doc = new DOMParser().parseFromString(d.h, 'text/html'); const main = doc.querySelector('article, main') || doc.body; d.x = main ? main.innerText || main.textContent : ''; }
+    }
+    let rec = null;
+    // старая закладка присылала только разметку рецепта (JSON-LD) — поддерживаем её
+    for (const block of d.l || []) { try { rec = findRecipe(JSON.parse(block)); } catch (e) { /* битый JSON */ } if (rec) break; }
     if (rec) {
       openRecipeDraft({
         title: stripTags(strOf(rec.name)) || d.t,
@@ -207,15 +238,21 @@
     toast(parsed.ingredients.length ? 'Проверьте рецепт и сохраните' : 'Ингредиенты не распознались: допишите их или выделите текст рецепта и нажмите закладку снова');
   }
   let pendingImport = null;
-  function checkImportHash() {
+  // данные закладки: base64 (старая закладка) или «z» + gzip+base64 (новая)
+  async function decodePayload(raw) {
+    const gz = raw[0] === 'z';
+    let b = (gz ? raw.slice(1) : raw).replace(/-/g, '+').replace(/_/g, '/');
+    while (b.length % 4) b += '=';
+    const bin = atob(b);
+    if (!gz) return JSON.parse(decodeURIComponent(escape(bin)));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return JSON.parse(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).text());
+  }
+  async function checkImportHash() {
     const m = location.hash.match(/^#\/import\?d=([A-Za-z0-9_-]+)/);
     if (!m) return;
     history.replaceState(null, '', location.pathname + '#/recipes');
-    try {
-      let b = m[1].replace(/-/g, '+').replace(/_/g, '/');
-      while (b.length % 4) b += '=';
-      pendingImport = JSON.parse(decodeURIComponent(escape(atob(b))));
-    } catch (e) { toast('Не получилось прочитать данные со страницы', 'err'); return; }
+    try { pendingImport = await decodePayload(m[1]); } catch (e) { toast('Не получилось прочитать данные со страницы', 'err'); return; }
     App.render();
     processPending();
   }
@@ -350,16 +387,18 @@
     document.title = title; // имя файла при «Сохранить как PDF»
     setTimeout(() => { window.print(); document.title = old; }, 50);
   }
-  const ingLine = (i, f = 1) => esc(App.ingText(i, f));
   function recipeHTML(r) {
     const steps = App.recipeSteps(r);
+    // печатаем так, как сейчас на экране: с пересчётом, правками и граммами в скобках
+    const f = App.scaleOf(r), b = parseInt(String(r.servings || '').match(/\d+/) || '', 10);
+    const serv = f !== 1 && b ? `${String(Math.round(b * f * 2) / 2).replace('.', ',')} порц. (в рецепте ${r.servings})` : r.servings;
     return `<article class="p-recipe">
       <h1>${esc(r.title)}</h1>
-      <p class="p-meta">${esc([r.category, r.servings, r.time].filter(Boolean).join(' · '))}${r.url ? `<br><small>${esc(r.url)}</small>` : ''}</p>
+      <p class="p-meta">${esc([r.category, serv, r.time].filter(Boolean).join(' · '))}${r.url ? `<br><small>${esc(r.url)}</small>` : ''}</p>
       ${r.image ? `<img class="p-photo" src="${esc(r.image)}" alt="">` : ''}
       <div class="p-cols">
-        <section><h2>Ингредиенты</h2><ul>${(r.ingredients || []).map((i) => `<li>${ingLine(i, App.scaleOf(r))}</li>`).join('') || '<li>—</li>'}</ul></section>
-        <section><h2>Приготовление</h2>${steps.length ? `<ol>${steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>` : '<p>—</p>'}
+        <section><h2>Ингредиенты</h2><ul>${(r.ingredients || []).map((i, n) => `<li>${App.ingLineHTML(r, i, n, false)}</li>`).join('') || '<li>—</li>'}</ul></section>
+        <section><h2>Приготовление</h2>${steps.length ? `<ol>${steps.map((s) => `<li>${App.stepHTML(r, s)}</li>`).join('')}</ol>` : '<p>—</p>'}
           ${r.notes ? `<h2>Заметки</h2><p>${esc(r.notes)}</p>` : ''}</section>
       </div></article>`;
   }

@@ -1,10 +1,10 @@
 // Сервис-воркер: приложение открывается и без интернета.
 // Свои файлы — «сначала сеть, потом кэш» (обновления видны сразу, офлайн берётся сохранённая копия).
 // После изменения файлов можно поднять версию, чтобы старый кэш удалился.
-const CACHE = 'kuhnya-v8';
+const CACHE = 'kuhnya-v10';
 const SHELL = [
   './', './index.html', './desktop.html', './manifest.webmanifest', './manifest-desktop.webmanifest', './css/styles.css', './css/desktop.css',
-  './js/config.js', './js/ingredients.js', './js/seed.js', './js/utils.js', './js/store.js', './js/receipt.js', './js/recipe-import.js', './js/app.js', './js/desktop.js',
+  './js/config.js', './js/ingredients.js', './js/seed.js', './js/utils.js', './js/store.js', './js/receipt.js', './js/recipe-extract.js', './js/recipe-import.js', './js/measures.js', './js/app.js', './js/desktop.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',
 ];
 const CDN = 'https://cdn.jsdelivr.net/';
