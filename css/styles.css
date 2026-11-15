@@ -424,6 +424,12 @@ body.cooking { padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
 .diag .slow .dot { background: var(--warn-soft); color: var(--warn); }
 .diag .bad .dot { background: var(--bad-soft); color: var(--bad); }
 .diag small { color: var(--muted); }
+/* проверка распознавания чеков */
+.bench { width: 100%; border-collapse: collapse; font-size: .88rem; margin: 6px 0 10px; }
+.bench th { text-align: left; font-weight: 600; color: var(--muted); font-size: .78rem; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.bench td { padding: 6px; border-bottom: 1px dashed var(--line); vertical-align: top; word-break: break-word; }
+.bench tr.bad td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+.bench ul { margin: 4px 0; padding-left: 18px; }
 /* пересчёт количеств и граммы */
 .serv-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 6px; }
 .serv-row .serv { margin: 0; }

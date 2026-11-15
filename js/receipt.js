@@ -416,6 +416,70 @@
     return n;
   }
   // «…1кг, кг» / «…500г. ШТ.» — единица продажи в конце названия
+  // ---------- Исправление названий ----------
+  // Частые слова из чеков продуктовых магазинов: по ним чинятся опечатки распознавания.
+  const GROCERY = new Set(`фрукт фрукты овощи свинина говядина баранина индейка курица куриное куриная куриные цыпленок филе грудка бедро
+    голень крылья окорочка фарш лопатка шейка корейка ребра охлажденная охлажденный замороженная замороженный копченая вареная колбаса
+    сосиски сардельки ветчина бекон хлеб батон багет лаваш булочка булочки столичный бородинский нарезка нарезной нарезанный хлебный
+    яблоки яблоко сезонные груши бананы апельсины мандарины лимоны лимон лайм виноград тайфун киви авокадо гранат персики сливы хурма
+    ананас картофель морковь репчатый чеснок капуста белокочанная цветная огурцы помидоры томаты черри перец сладкий кабачки баклажаны
+    свекла редис зелень укроп петрушка салат шампиньоны грибы макароны паста спагетти рожки перья спирали лапша вермишель тонкие
+    классические гречка гречневая крупа овсяные хлопья геркулес пшеничная сахар масло подсолнечное оливковое сливочное молоко
+    пастеризованное ультрапастеризованное питьевое кефир ряженка йогурт сметана творог творожный творожная сырок сырки глазированный
+    ваниль ванильный какао шоколад шоколадный гауда российский моцарелла плавленый сливки майонез кетчуп горчица соус яйца яйцо
+    столовые отборные минеральная газированная негазированная нектар печенье пряники вафли конфеты зефир мармелад пирожное мороженое
+    пломбир пельмени вареники котлеты рыба горбуша семга лосось форель скумбрия сельдь минтай треска креветки крабовые палочки
+    консервы горошек кукуруза фасоль тунец салфетки бумажные бумага туалетная полотенца пакет пакеты мыло шампунь порошок средство
+    губки фольга пленка брест литовск пискаревский пюрпак напиток газировка семечки орехи арахис фисташки миндаль изюм курага чернослив
+    кукурузные завтрак мюсли соевый бульон приправа специи лавровый корица дрожжи разрыхлитель крахмал желатин уксус огурчики маринованные`
+    .split(/\s+/).filter(Boolean));
+  // цифра, распознанная вместо похожей буквы внутри слова: «хле6» → «хлеб», «6ум» → «бум», «м0локо» → «молоко»
+  const DIGIT_AS_LETTER = { 6: 'б', 0: 'о', 3: 'з', 8: 'в', 4: 'ч' };
+  function digitsToLetters(name) {
+    return name.replace(/[а-яё0-9]+/gi, (w) => {
+      const digits = w.replace(/\D/g, '');
+      if (digits.length !== 1 || !/[а-яё]{2}/i.test(w) || !DIGIT_AS_LETTER[digits]) return w;
+      // «45г», «500г», «2к» — это фасовка, а не слово
+      if (/^\d+(г|гр|кг|мл|л|шт|см|мм|к)$/i.test(w)) return w;
+      return w.replace(/\d/, (d) => DIGIT_AS_LETTER[d]);
+    });
+  }
+  const norm = (w) => w.toLowerCase().replace(/ё/g, 'е');
+  // ближайшее слово словаря: не больше 1 ошибки (2 для длинных слов), и только если вариант один
+  function nearest(lw, vocab, maxD) {
+    let best = '', bd = maxD + 1, tie = false;
+    for (const v of vocab) {
+      if (Math.abs(v.length - lw.length) > maxD) continue;
+      const d = lev(v, lw);
+      if (d < bd) { bd = d; best = v; tie = false; } else if (d === bd && v !== best) tie = true;
+    }
+    return best && !tie ? best : '';
+  }
+  // Название с чека → без опечаток. vocab — дополнительные «правильные» слова (справочник, прошлые покупки).
+  function fixName(name, extra) {
+    const vocab = extra ? new Set([...GROCERY, ...extra]) : GROCERY;
+    const list = [...vocab];
+    let words = digitsToLetters(String(name || '')).split(/\s+/).filter(Boolean);
+    const isWord = (w) => /^[а-яё]+$/i.test(w);
+    // 1) слово, разрезанное пробелом: «кар гофель» → «картофель»
+    for (let i = 0; i < words.length - 1; i++) {
+      const a = words[i], b = words[i + 1];
+      if (!isWord(a) || !isWord(b) || vocab.has(norm(a)) || vocab.has(norm(b))) continue;
+      const joined = norm(a + b);
+      const hit = vocab.has(joined) ? joined : joined.length >= 6 ? nearest(joined, list, joined.length >= 9 ? 2 : 1) : '';
+      if (hit) { words.splice(i, 2, hit); i--; }
+    }
+    // 2) отдельные слова; короткие (4 буквы) — только первое: там обычно сам продукт («Рукт» → «фрукт»)
+    words = words.map((w, i) => {
+      if (!isWord(w) || vocab.has(norm(w))) return w;
+      const lw = norm(w);
+      if (lw.length < 4 || (lw.length === 4 && i > 0)) return w;
+      return nearest(lw, list, lw.length >= 8 ? 2 : 1) || w;
+    });
+    const out = words.join(' ');
+    return out.charAt(0).toUpperCase() + out.slice(1);
+  }
+
   function splitUnit(name) {
     const m = name.match(/[\s.,]+(кг|шт|л)\.?$/i);
     return m ? { name: name.slice(0, m.index).replace(/[\s.,]+$/, ''), unit: m[1].toLowerCase() } : { name, unit: '' };
@@ -558,16 +622,99 @@
       items: list.map((i) => {
         const u = splitUnit(i.name);
         return {
-          name: u.name, total: i.total, price: i.price,
+          name: fixName(u.name), raw: u.name, total: i.total, price: i.price,
           qty: String(Math.round(i.qty * 1000) / 1000).replace('.', ','),
           unit: i.qty % 1 ? (u.unit === 'л' ? 'л' : 'кг') : (u.unit === 'л' ? 'л' : 'шт'),
           fixed: i.fixed || '', doubt: !!i.doubt,
         };
       }),
       total: total || null,
+      fiscal: fiscal(lines),
       discount: r2(discount),
       stamp,
     };
+  }
+
+  // ---------- Реквизиты чека для проверки в ФНС ----------
+  // Внизу чека: «ФН: 7384440901580567», «ФД: 25187», «ФП: 2685007847». Распознавание часто читает «ФД» как «0D», «ФП» как «0П»,
+  // поэтому ищем по смыслу: ФН — 16 цифр, начинается с 7 или 9; ФП — до 10 цифр после «П»; ФД — число после «Д/D».
+  function fiscal(lines) {
+    const all = (Array.isArray(lines) ? lines : String(lines || '').split('\n')).join(' \n ');
+    const fnM = all.match(/(?<!\d)([79]\d{15})(?!\d)/);
+    const fpM = all.match(/[ФфOО0][ПпNn]\s*[:.№]?\s*(\d{6,10})(?!\d)/);
+    const fdM = all.match(/[ФфOО0][ДдDd]\s*[:.№]?\s*(\d{1,10})(?!\d)/);
+    let fd = fdM ? fdM[1] : '', fp = fpM ? fpM[1] : '';
+    // подписи «ФД»/«ФП» не прочитались совсем: «СНО:ОСН :25187 0:2685007847» — внизу чека два числа после двоеточий,
+    // первое — номер документа, второе (8–10 цифр) — фискальный признак
+    if (!fd || !fp) {
+      const rows = (Array.isArray(lines) ? lines : String(lines || '').split('\n')).slice(-8).reverse();
+      for (const r of rows) {
+        const m = r.match(/:\s*(\d{1,9})\s+\S{0,4}:\s*(\d{8,10})(?!\d)/);
+        if (m) { fd = fd || m[1]; fp = fp || m[2]; break; }
+      }
+    }
+    return { fn: fnM ? fnM[1] : '', fd, fp };
+  }
+  // Строка как в QR-коде, собранная из текста чека (если сам QR не прочитался)
+  function qrFromText(parsed) {
+    const f = parsed.fiscal || {}, st = parsed.stamp;
+    if (!f.fn || !f.fd || !f.fp || !st || !parsed.total) return '';
+    return `t=${st.date.replace(/-/g, '')}T${st.time.replace(':', '')}&s=${parsed.total.toFixed(2)}&fn=${f.fn}&i=${f.fd}&fp=${f.fp}&n=1`;
+  }
+
+  // ---------- Проверка чека по базе ФНС (proverkacheka.com) ----------
+  // Сервис сам берёт чек из ФНС по реквизитам: точные названия, количества и суммы. Нужен токен из личного кабинета.
+  const FNS_CODES = {
+    0: 'чек не найден или реквизиты прочитаны неверно',
+    2: 'ФНС ещё не получила этот чек, попробуйте через несколько часов',
+    3: 'исчерпан лимит запросов к сервису на сегодня',
+    4: 'сервис просит подождать, попробуйте через минуту',
+    5: 'сервис не смог получить данные чека',
+    401: 'неверный токен — проверьте его в настройках',
+  };
+  const MEASURE = { 10: 'г', 11: 'кг', 40: 'мл', 41: 'л' };
+  async function fns(qrraw, token) {
+    const fd = new FormData();
+    fd.append('token', token); fd.append('qrraw', qrraw);
+    const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 30000);
+    let body;
+    try {
+      const res = await fetch('https://proverkacheka.com/api/v1/check/get', { method: 'POST', body: fd, signal: ctrl.signal });
+      body = await res.json();
+    } catch (e) {
+      throw new Error(ctrl.signal.aborted ? 'сервис проверки чеков не ответил' : 'нет связи с сервисом проверки чеков');
+    } finally { clearTimeout(timer); }
+    const code = Number(body && body.code);
+    if (code !== 1) throw new Error(FNS_CODES[code] || (typeof (body && body.data) === 'string' ? body.data : 'неизвестная ошибка сервиса'));
+    const j = (body.data && (body.data.json || body.data)) || {};
+    const doc = j.document && j.document.receipt ? j.document.receipt : j;
+    const kop = (v) => Math.round(Number(v) || 0) / 100;
+    const items = (doc.items || []).map((it) => {
+      const q = Number(it.quantity) || 1;
+      const unit = MEASURE[it.itemsQuantityMeasure] || (q % 1 ? 'кг' : 'шт');
+      return { name: String(it.name || '').replace(/\s+/g, ' ').trim(), qty: String(Math.round(q * 1000) / 1000).replace('.', ','), unit, price: kop(it.price), total: kop(it.sum) };
+    }).filter((i) => i.name && i.total > 0);
+    let date = '', time = '';
+    const dt = doc.dateTime;
+    if (typeof dt === 'number') { const d = new Date(dt * 1000); date = d.toISOString().slice(0, 10); time = d.toISOString().slice(11, 16); } // UTC: точное время чека в QR
+    else if (dt) { date = String(dt).slice(0, 10); time = String(dt).slice(11, 16); }
+    return { items, total: kop(doc.totalSum), date, time, shop: String(doc.retailPlace || doc.user || '').replace(/^ООО\s*|"/g, '').trim() };
+  }
+
+  // Сравнить распознанное с эталоном (данными ФНС): сколько сумм совпало и насколько похожи названия
+  function compare(ocrItems, refItems) {
+    const pool = ocrItems.map((i) => ({ ...i, used: false }));
+    let amounts = 0, names = 0;
+    const rows = refItems.map((ref) => {
+      const hit = pool.find((o) => !o.used && Math.abs(o.total - ref.total) < 0.011);
+      if (!hit) return { ref: ref.name, total: ref.total, ocr: '', sim: 0 };
+      hit.used = true; amounts++;
+      const a = norm(hit.raw || hit.name).replace(/[^а-яa-z0-9]/g, ''), b = norm(ref.name).replace(/[^а-яa-z0-9]/g, '');
+      const sim = 1 - lev(a, b) / Math.max(1, a.length, b.length);
+      names += sim;
+      return { ref: ref.name, total: ref.total, ocr: hit.raw || hit.name, sim };
+    });
+    return { amounts, of: refItems.length, extra: pool.filter((o) => !o.used).length, names: amounts ? names / amounts : 0, rows };
   }
 
   // ---------- Всё вместе ----------
@@ -682,6 +829,7 @@
     const discount = target && Math.abs(sum - target) <= 0.05 ? 0 : parsed.discount;
     return {
       qr, text: res.text, items: parsed.items, ocrTotal: parsed.total, discount, stamp: parsed.stamp,
+      fiscal: parsed.fiscal, qrraw: qr ? qr.raw : qrFromText(parsed),
       info: { engine: res.engine, nnError, conf: Math.round(res.conf), textH: res.textH, fixed: parsed.items.filter((i) => i.fixed).length },
     };
   }
@@ -696,6 +844,6 @@
     } finally { worker.terminate(); }
   }
 
-  window.Receipt = { scan, lev, parseQR, parseText, prepForOCR, prepareReceipt, prepareNN, textBox, skewAngle, paperBox, findQR, ocrText, loadScript, loadImage, binarize, grayVariant, toCanvas, rotate };
+  window.Receipt = { scan, lev, fixName, fiscal, qrFromText, fns, compare, parseQR, parseText, prepForOCR, prepareReceipt, prepareNN, textBox, skewAngle, paperBox, findQR, ocrText, loadScript, loadImage, binarize, grayVariant, toCanvas, rotate };
 })();
 

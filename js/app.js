@@ -974,27 +974,11 @@
     ['фрукт', 'овощ', 'паста', 'спагетти', 'рожки', 'сырок', 'салфетки', 'пакет', 'напиток', 'конфеты', 'печенье', 'шоколад', 'йогурт', 'творожок', 'батон', 'охлажденная', 'пастеризованное'].forEach((w) => set.add(w));
     return { set, list: [...set] };
   }
-  function rcFixWords(name, vocab) {
-    // короткие слова (4 буквы) чиним только в начале названия: там стоит сам продукт («клеб» → «хлеб»)
-    return String(name).trim().replace(/[а-яё]{4,}/gi, (w, at) => {
-      const lw = w.toLowerCase().replace(/ё/g, 'е');
-      if (vocab.set.has(lw) || (lw.length === 4 && at > 0)) return w;
-      const max = lw.length >= 8 ? 2 : 1;
-      let best = '', bd = max + 1, tie = false;
-      for (const v of vocab.list) {
-        if (Math.abs(v.length - lw.length) > max) continue;
-        const d = Receipt.lev(v, lw);
-        if (d < bd) { bd = d; best = v; tie = false; } else if (d === bd && v !== best) tie = true;
-      }
-      return best && !tie ? best : w;
-    });
-  }
-
   // Строка чека → продукт. Главное слово в чеке стоит первым («Молоко Пискар. 2.5%», «Сырок глаз. какао»),
   // поэтому продукт из справочника ищем по первым словам, а не по всей строке (иначе сырок с какао стал бы «какао»).
   const RC_GENERIC = new Set(['фрукт', 'фрукты', 'овощ', 'овощи', 'продукт', 'напиток', 'изделие', 'набор', 'бзмж', 'охл', 'зам']);
   function rcProduct(name, cat, vocab) {
-    const words = productName(rcFixWords(name, vocab)).split(' ').filter((w) => (w.length >= 3 || /^[a-z]{2,}$/.test(w)) && !RC_GENERIC.has(w));
+    const words = productName(Receipt.fixName(name, vocab.list)).split(' ').filter((w) => (w.length >= 3 || /^[a-z]{2,}$/.test(w)) && !RC_GENERIC.has(w));
     const head = words.slice(0, 2);
     for (const probe of [head.join(' '), head[0], head[1]]) {
       if (!probe) continue;
@@ -1047,10 +1031,96 @@
         if (rest) { const big = receiptDraft.items.reduce((a, b) => (b.total > a.total ? b : a)); big.total = Math.round((big.total + rest) * 100) / 100; }
         receiptDraft.discountApplied = res.discount;
       }
+      receiptDraft.qrraw = res.qrraw;
+      // есть токен и реквизиты — берём точные данные из ФНС
+      if (fnsToken() && res.qrraw) {
+        setStage('Сверяю с базой ФНС…', 0.98);
+        await rcAskFns(receiptDraft);
+        if (id !== receiptScanId || !$('#modal').open) return;
+      }
       openModal(receiptForm(receiptDraft));
     } catch (e) {
       if (id === receiptScanId) { closeModal(); fail(e); }
     }
+  }
+
+  // ---------- Чек из базы ФНС (proverkacheka.com) ----------
+  const FNS_ID = 'settings-fns', OCR_LOG_ID = 'settings-ocr-log';
+  const fnsToken = () => String((Store.get('settings', FNS_ID) || {}).token || '').trim();
+  // запросить чек в ФНС и заменить распознанные позиции точными; распознанное запомнить для статистики
+  async function rcAskFns(d) {
+    try {
+      const f = await Receipt.fns(d.qrraw, fnsToken());
+      if (!f.items.length) throw new Error('в ответе ФНС нет позиций');
+      const cat = catalog(), words = rcVocab();
+      const ocr = d.ocrItems || d.items.map((i) => ({ name: i.orig, raw: i.orig, total: i.total }));
+      d.ocrItems = ocr;
+      d.items = f.items.map((it) => {
+        const learned = rcLookup(it.name);
+        return { name: learned ? learned.name : rcProduct(it.name, cat, words), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true };
+      });
+      const m = d.qrraw.match(/fn=(\d+).*?i=(\d+).*?fp=(\d+)/);
+      d.qr = { ...(d.qr || {}), date: f.date || (d.qr && d.qr.date) || (d.stamp && d.stamp.date), time: f.time || (d.qr && d.qr.time) || (d.stamp && d.stamp.time) || '', sum: f.total || (d.qr && d.qr.sum), key: (d.qr && d.qr.key) || (m ? `${m[1]}-${m[2]}-${m[3]}` : ''), raw: d.qrraw };
+      d.date = undefined; d.discountApplied = 0; d.fns = true; d.fnsError = '';
+      if (ocr.length) await rcLog(Receipt.compare(ocr, f.items), d);
+    } catch (e) {
+      d.fnsError = String((e && e.message) || e);
+    }
+  }
+  // журнал «распознанное против ФНС»: из него видно, как часто и где ошибается распознавание
+  async function rcLog(cmp, d) {
+    const cur = Store.get('settings', OCR_LOG_ID) || { id: OCR_LOG_ID, list: [] };
+    const entry = { at: new Date().toISOString(), date: d.qr && d.qr.date, sum: d.qr && d.qr.sum, amounts: cmp.amounts, of: cmp.of, extra: cmp.extra,
+      names: Math.round(cmp.names * 100), engine: d.info && d.info.engine, textH: d.info && d.info.textH,
+      misses: cmp.rows.filter((r) => !r.ocr || r.sim < 0.8).slice(0, 8).map((r) => ({ ref: r.ref, ocr: r.ocr, total: r.total })) };
+    await Store.save('settings', { ...cur, id: OCR_LOG_ID, list: [entry, ...(cur.list || [])].slice(0, 40) });
+  }
+  async function runOcrBench(files) {
+    const out = () => $('#bench-out');
+    const results = [];
+    const pct = (v) => `${Math.round(v * 100)}%`;
+    const render = (status) => {
+      if (!out()) return;
+      out().innerHTML = `${status ? `<p>${esc(status)}</p>` : ''}
+        <table class="bench"><thead><tr><th>Чек</th><th>Суммы</th><th>Названия</th><th>Итог</th></tr></thead><tbody>
+        ${results.map((r) => `<tr class="${r.bad ? 'bad' : ''}"><td>${esc(r.file)}<br><small class="muted">${esc(r.note)}</small></td><td>${esc(r.amounts)}</td><td>${esc(r.names)}</td><td>${esc(r.total)}</td></tr>
+          ${r.misses && r.misses.length ? `<tr><td colspan="4"><details><summary class="small">Где ошибки (${r.misses.length})</summary><ul class="small">${r.misses.map((x) => `<li><b>${esc(x.ref)}</b> ${money(x.total)} ₽<br>распознано: ${esc(x.ocr || '— не найдено')}</li>`).join('')}</ul></details></td></tr>` : ''}`).join('')}
+        </tbody></table>${results.length && !status ? ocrStatsHtml() : ''}`;
+    };
+    for (const [n, file] of files.entries()) {
+      render(`Чек ${n + 1} из ${files.length}: распознаю…`);
+      const row = { file: file.name || `фото ${n + 1}`, note: '', amounts: '—', names: '—', total: '—' };
+      try {
+        const t0 = performance.now();
+        const res = await Receipt.scan([file], () => {});
+        const sum = res.items.reduce((s, i) => s + i.total, 0);
+        const target = res.qr ? res.qr.sum : res.ocrTotal;
+        row.total = target ? (Math.abs(sum - target) < 0.05 ? 'сошёлся ✓' : `${money(sum)} из ${money(target)}`) : 'итог не найден';
+        row.note = `${res.items.length} поз., ${res.info.engine === 'nn' ? 'нейросеть' : 'запасной способ'}, ${Math.round((performance.now() - t0) / 1000)} с${res.info.textH ? `, буквы ${res.info.textH} px` : ''}`;
+        if (fnsToken() && res.qrraw) {
+          render(`Чек ${n + 1} из ${files.length}: сверяю с ФНС…`);
+          try {
+            const f = await Receipt.fns(res.qrraw, fnsToken());
+            const cmp = Receipt.compare(res.items, f.items);
+            row.amounts = `${cmp.amounts} из ${cmp.of}${cmp.extra ? ` (+${cmp.extra} лишн.)` : ''}`;
+            row.names = pct(cmp.names);
+            row.misses = cmp.rows.filter((r) => !r.ocr || r.sim < 0.8).map((r) => ({ ref: r.ref, ocr: r.ocr, total: r.total }));
+            row.bad = cmp.amounts < cmp.of;
+            await rcLog(cmp, { qr: { date: f.date, sum: f.total }, info: res.info });
+          } catch (e) { row.note += ` · ФНС: ${e.message}`; }
+        } else if (fnsToken()) row.note += ' · реквизиты чека (ФН/ФД/ФП) не прочитались — сверить с ФНС нельзя';
+        if (!fnsToken()) row.bad = !(target && Math.abs(sum - target) < 0.05);
+      } catch (e) { row.note = 'ошибка: ' + e.message; row.bad = true; }
+      results.push(row);
+    }
+    render('');
+  }
+  function ocrStatsHtml() {
+    const list = ((Store.get('settings', OCR_LOG_ID) || {}).list || []);
+    if (!list.length) return '<p class="muted small">Сверок с ФНС пока не было: статистика появится после первых чеков.</p>';
+    const a = list.reduce((s, e) => s + e.amounts, 0), of = list.reduce((s, e) => s + e.of, 0);
+    const n = Math.round(list.reduce((s, e) => s + e.names, 0) / list.length);
+    return `<p class="small">Последние ${list.length} ${U.plural(list.length, 'чек', 'чека', 'чеков')}, сверенных с ФНС: суммы распознаны верно в <b>${Math.round((a / Math.max(1, of)) * 100)}%</b> позиций, названия совпадают в среднем на <b>${n}%</b>.</p>`;
   }
 
   function receiptForm(d) {
@@ -1060,15 +1130,18 @@
     const shops = [...new Set(['Пловдив', ...Store.all('shopping').map((s) => s.shop).filter(Boolean)])];
     return `<form class="form receipt" data-form="receipt">
       <div class="form-head"><h2>Проверьте чек</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
-      <p class="small ${qr ? '' : 'warn-text'}">${qr
+      ${d.fns ? `<p class="small ok-text">${icon('check', 'tiny')} <b>Проверено по базе ФНС</b>: ${esc(U.fmtDate(qr.date))}${qr.time ? `, ${esc(qr.time)}` : ''} · <b>${money(qr.sum)} ₽</b>. Названия, количества и цены — точные из чека.</p>`
+        : d.fnsError ? `<p class="small warn-text">Запрос в ФНС не удался: ${esc(d.fnsError)}. Ниже — распознанное с фото. <button type="button" class="linklike" data-act="rc-fns">Повторить запрос</button></p>`
+        : !fnsToken() && d.qrraw ? `<p class="muted small">Реквизиты чека прочитаны. Если указать токен proverkacheka.com в настройках, позиции будут подставляться точно из базы ФНС.</p>` : ''}
+      ${d.fns ? '' : `<p class="small ${qr ? '' : 'warn-text'}">${qr
         ? `${icon('check', 'tiny')} QR-код: ${esc(U.fmtDate(qr.date))}, ${esc(qr.time)} · <b>${money(qr.sum)} ₽</b>${qr.refund ? ' · <b>возврат</b>' : ''}`
         : d.stamp && d.ocrTotal
           ? `QR-код не прочитался, дата и итог взяты из текста чека: ${esc(U.fmtDate(d.stamp.date))}, ${esc(d.stamp.time)} · <b>${money(d.ocrTotal)} ₽</b>. Проверьте их.`
           : 'QR-код не нашёлся: проверьте дату. Сумму считаю по позициям.'}
         ${d.discountApplied ? `<br>${icon('check', 'tiny')} Скидка ${money(d.discountApplied)} ₽ из чека уже разнесена по позициям.` : ''}
-        ${d.items.some((i) => i.fixed) ? `<br>${icon('check', 'tiny')} В ${d.items.filter((i) => i.fixed).length} поз. цифра прочиталась неточно — исправлена по проверке «количество × цена = сумма».` : ''}</p>
-      ${d.info && d.info.engine === 'tess' ? `<p class="small warn-text">Чек прочитан <b>запасным способом</b> (он заметно хуже): нейросеть на этом устройстве не сработала — ${esc(d.info.nnError || 'причина неизвестна')}. Пришлите снимок этого окна, разберёмся.</p>` : d.info && d.info.engine ? `<p class="muted small">Распознавание: нейросеть${d.info.conf ? `, уверенность ${d.info.conf}%` : ''}.</p>` : ''}
-      ${d.info && d.info.textH && d.info.textH < 13 ? `<p class="small warn-text">Чек снят мелко (буквы около ${d.info.textH} px), названия могли прочитаться с ошибками. Длинный чек лучше снимать двумя-тремя фото по частям с небольшим перекрытием и выбирать их все сразу — приложение склеит.</p>` : ''}
+        ${d.items.some((i) => i.fixed) ? `<br>${icon('check', 'tiny')} В ${d.items.filter((i) => i.fixed).length} поз. цифра прочиталась неточно — исправлена по проверке «количество × цена = сумма».` : ''}</p>`}
+      ${d.fns ? '' : d.info && d.info.engine === 'tess' ? `<p class="small warn-text">Чек прочитан <b>запасным способом</b> (он заметно хуже): нейросеть на этом устройстве не сработала — ${esc(d.info.nnError || 'причина неизвестна')}. Пришлите снимок этого окна, разберёмся.</p>` : d.info && d.info.engine ? `<p class="muted small">Распознавание: нейросеть${d.info.conf ? `, уверенность ${d.info.conf}%` : ''}.</p>` : ''}
+      ${!d.fns && d.info && d.info.textH && d.info.textH < 13 ? `<p class="small warn-text">Чек снят мелко (буквы около ${d.info.textH} px), названия могли прочитаться с ошибками. Длинный чек лучше снимать двумя-тремя фото по частям с небольшим перекрытием и выбирать их все сразу — приложение склеит.</p>` : ''}
       <div class="grid2">
         <label>Дата покупки<input type="date" name="date" value="${esc(date)}" max="${U.today()}" required></label>
         <label>Магазин<input name="shop" list="dl-shops" value="${esc(d.shop != null ? d.shop : lastShop)}" placeholder="необязательно"></label>
@@ -1730,6 +1803,17 @@
         <p class="small">Предупреждение в приложении появляется за <b>${REMIND_DAYS}</b> ${U.plural(REMIND_DAYS, 'день', 'дня', 'дней')} до конца срока (меняется в <code>js/config.js</code>).
         ${cloud ? 'Ежедневные сообщения в Telegram настраиваются в GitHub (см. инструкцию).' : 'После подключения Supabase и GitHub будут приходить сообщения в Telegram.'}
         У каждой заготовки есть кнопка ${icon('cal', 'tiny')}: добавить напоминание в Google Календарь.</p>
+      </section>
+      <section class="card">
+        <h2>Чеки: точные данные из ФНС</h2>
+        <p class="small">С токеном сервиса <a href="https://proverkacheka.com" target="_blank" rel="noopener noreferrer">proverkacheka.com</a> приложение после фото само запрашивает чек в базе ФНС — по QR-коду или по реквизитам ФН/ФД/ФП внизу чека — и подставляет точные названия, количества и цены. Бесплатно — ограниченное число чеков в сутки. Как получить токен — в «ИНСТРУКЦИЯ.md», раздел «Чеки».</p>
+        <form class="form" data-form="fns-token">
+          <label>Токен<input name="token" type="password" autocomplete="off" value="${esc(fnsToken())}" placeholder="вставьте токен из личного кабинета"></label>
+          <div class="row wrap"><button class="btn primary">Сохранить</button>${fnsToken() ? '<button type="button" class="btn" data-act="fns-clear">Убрать</button>' : ''}</div>
+        </form>
+        <p class="small ${fnsToken() ? 'ok-text' : 'muted'}">${fnsToken() ? `${icon('check', 'tiny')} Токен сохранён. Он хранится в вашей общей базе и виден только вам двоим.` : 'Токен не указан: позиции берутся только из распознавания фото.'}</p>
+        ${ocrStatsHtml()}
+        <button class="btn" data-act="ocr-bench">${icon('search')}<span>Проверить распознавание на своих чеках</span></button>
       </section>`;
   }
 
@@ -1826,6 +1910,26 @@
       const rows = document.querySelectorAll('#modal .rc-row [name="n"]');
       if (rows.length) rows[rows.length - 1].focus();
     },
+    'rc-fns': async (el) => {
+      const d = readReceiptForm(el.closest('form'));
+      el.disabled = true; el.textContent = 'запрашиваю…';
+      await rcAskFns(d);
+      openModal(receiptForm(d));
+      toast(d.fns ? 'Позиции взяты из базы ФНС' : `ФНС: ${d.fnsError}`, d.fns ? '' : 'err');
+    },
+    'fns-clear': async () => {
+      const cur = Store.get('settings', FNS_ID);
+      if (cur) await Store.save('settings', { ...cur, token: '' });
+      toast('Токен убран');
+    },
+    // проверка распознавания на своих чеках: выбрать фото → распознать → сверить с ФНС (или с «Итогом»)
+    'ocr-bench': () => openModal(`<div class="form">
+      <div class="form-head"><h2>Проверка распознавания</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+      <p class="small">Выберите фото нескольких чеков (каждое фото — отдельный чек). Приложение распознает их и сравнит ${fnsToken() ? 'с точными данными из ФНС' : 'с «Итогом» на чеке (с токеном ФНС сравнение будет точнее — по каждой позиции)'}. В покупки ничего не записывается.</p>
+      ${fnsToken() ? '<p class="muted small">Каждый чек — один запрос к сервису проверки (бесплатно ограниченное число в сутки).</p>' : ''}
+      <label class="btn primary block">${icon('camera')}<span>Выбрать фото чеков</span><input type="file" accept="image/*" multiple data-act-change="ocr-bench-files" hidden></label>
+      <div id="bench-out">${ocrStatsHtml()}</div>
+    </div>`),
     'rc-fit': (el) => {
       const f = el.closest('form');
       const d = readReceiptForm(f);
@@ -2212,6 +2316,12 @@
     },
     cooked: (f) => saveCooked(f),
     adj: (f) => adjScale(f),
+    'fns-token': async (f) => {
+      const token = f.token.value.trim();
+      if (token && !/^[\w.-]{8,}$/.test(token)) { toast('Похоже, это не токен: вставьте его целиком, без пробелов', 'err'); return; }
+      await Store.save('settings', { ...(Store.get('settings', FNS_ID) || {}), id: FNS_ID, token });
+      toast(token ? 'Токен сохранён: следующие чеки будут сверяться с ФНС' : 'Токен убран');
+    },
     'pick-items': async (f) => {
       const buy = [], home = [];
       pickItemsData.forEach((it, i) => {
@@ -2379,6 +2489,11 @@
         })
         .catch((e) => { if (st) st.textContent = e.message || String(e); fail(e); })
         .finally(() => { if (label) label.classList.remove('loading'); });
+    }
+    if (el.dataset.actChange === 'ocr-bench-files' && el.files.length) {
+      const files = [...el.files];
+      el.value = '';
+      runOcrBench(files).catch(fail);
     }
     if (el.dataset.actChange === 'receipt' && el.files.length) {
       const files = [...el.files];
