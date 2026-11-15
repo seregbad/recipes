@@ -27,6 +27,16 @@
 
   const cfg = window.APP_CONFIG || {};
   const cloudConfigured = !!(cfg.supabaseUrl && cfg.supabaseAnonKey && window.supabase);
+  // Посредник (например, Yandex Cloud API Gateway): если в config.js задан proxyUrl, все запросы к базе идут через него.
+  // Нужен, когда оператор режет соединения с Supabase/Cloudflare и без VPN синхронизация не работает.
+  const PROXY = String(cfg.proxyUrl || '').trim().replace(/\/+$/, '');
+  const BASE = PROXY || cfg.supabaseUrl;
+  Store.proxied = !!PROXY;
+  // ключ входа оставляем прежним, чтобы после включения посредника не пришлось входить заново
+  let STORAGE_KEY;
+  try { STORAGE_KEY = `sb-${new URL(cfg.supabaseUrl).hostname.split('.')[0]}-auth-token`; } catch (e) { /* адреса нет — локальный режим */ }
+  // ссылки на фото в данных хранятся с адресом Supabase, а показываются через посредника
+  Store.mediaUrl = (u) => (PROXY && typeof u === 'string' && cfg.supabaseUrl && u.startsWith(cfg.supabaseUrl) ? PROXY + u.slice(cfg.supabaseUrl.length) : u);
   // в config.js адрес и ключ заданы, а библиотека базы не загрузилась (нет сети при самом первом запуске)
   Store.libMissing = !!(cfg.supabaseUrl && cfg.supabaseAnonKey && !window.supabase);
 
@@ -207,12 +217,14 @@
       if (s === 'out') { signedOut(); throw new Error('Нужно войти заново'); }
       if (s !== 'ok') { setNet(Store.online() ? 'down' : 'offline'); throw new TypeError('Failed to fetch: нет связи с базой'); }
       const rows = [];
+      // через посредника ответ не больше 2,5 МБ — читаем меньшими порциями
+      const PAGE = PROXY ? 150 : 1000;
       try {
-        for (let from = 0; ; from += 1000) {
-          const { data, error, status } = await Store.client.from('items').select('id, kind, data').order('id').range(from, from + 999);
+        for (let from = 0; ; from += PAGE) {
+          const { data, error, status } = await Store.client.from('items').select('id, kind, data, updated_at').order('id').range(from, from + PAGE - 1);
           if (error) throw fail(error, status);
           rows.push(...data);
-          if (data.length < 1000) break;
+          if (data.length < PAGE) break;
         }
       } catch (e) {
         const kind = classify(e);
@@ -225,13 +237,43 @@
       setAll(obj);
       applyPending();
       writeJSON(CACHE_KEY, Store.data);
-      Store.lastSync = new Date().toISOString();
-      writeJSON('nasha-kuhnya:last-sync', Store.lastSync);
+      fingerprint = `${rows.length}|${rows.reduce((m, r) => (String(r.updated_at || '') > m ? String(r.updated_at) : m), '')}`;
+      lastFull = Date.now();
+      markSynced();
       Store.net = 'ok';
       emit();
     })();
     try { return await Store._loading; } finally { Store._loading = null; }
   };
+  function markSynced() {
+    Store.lastSync = new Date().toISOString();
+    writeJSON('nasha-kuhnya:last-sync', Store.lastSync);
+  }
+
+  // Лёгкая проверка «изменилось ли что-то в базе»: число записей и время последней правки (ответ — пара сотен байт).
+  // Нужна, когда живое обновление не работает (через посредника его нет): базу целиком перечитываем, только если она изменилась.
+  let fingerprint = '', lastFull = 0;
+  async function poll() {
+    if (Store.loggedOut || Store._loading) return;
+    await Store.flush();
+    const s = await ensureSession();
+    if (s === 'out') { signedOut(); return; }
+    if (s !== 'ok') { setNet(Store.online() ? 'down' : 'offline'); return; }
+    const { data, count, error, status } = await Store.client.from('items').select('updated_at', { count: 'exact' }).order('updated_at', { ascending: false }).limit(1);
+    if (error) throw fail(error, status);
+    const top = data && data[0] ? String(data[0].updated_at || '') : '';
+    const [fc, ft] = fingerprint.split('|');
+    // если число записей не пришло (посредник не передал заголовок), удаления ловим полной сверкой раз в 3 минуты
+    const changed = top !== ft || (count != null ? String(count) !== fc : Date.now() - lastFull > 180000);
+    if (changed) { await Store.loadCloud(); return; }
+    markSynced();
+    if (Store.net !== 'ok') setNet('ok'); else emit();
+  }
+  Store.poll = poll;
+  const pollQuiet = () => poll().catch((e) => {
+    const kind = classify(e);
+    if (kind === 'net') setNet(Store.online() ? 'down' : 'offline'); else if (kind === 'auth') setNet('auth'); else console.error(e);
+  });
 
   async function sync() {
     if (Store.loggedOut) return;
@@ -275,7 +317,7 @@
       return { needLogin: false };
     }
     Store.mode = 'cloud';
-    Store.client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, { global: { fetch: timedFetch } });
+    Store.client = window.supabase.createClient(BASE, cfg.supabaseAnonKey, { global: { fetch: timedFetch }, auth: { storageKey: STORAGE_KEY } });
     Store.pending = readJSON(OUTBOX_KEY) || [];
     setAll(readJSON(CACHE_KEY)); // мгновенно показываем последнюю копию
     applyPending();
@@ -317,7 +359,8 @@
 
   Store.subscribe = () => {
     if (Store._channel) return;
-    Store._channel = Store.client
+    // через посредника живое обновление (WebSocket) не проходит — вместо него частая лёгкая проверка
+    if (PROXY) { Store._channel = 'off'; Store.realtime = 'OFF'; } else Store._channel = Store.client
       .channel('items-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'items' }, (payload) => {
         if (payload.eventType === 'DELETE') {
@@ -341,16 +384,17 @@
     // после возврата во вкладку или появления сети — отправить накопленное и перечитать
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible') return;
-      if (Store.pending.length || Store.realtime !== 'SUBSCRIBED' || sinceSync() > 30000) syncQuiet();
+      if (Store.pending.length || Store.realtime !== 'SUBSCRIBED' || sinceSync() > 30000) pollQuiet();
     });
     window.addEventListener('online', () => { backoff = 0; emit(); syncQuiet(); });
     window.addEventListener('offline', () => { setNet('offline'); emit(); });
-    // страховка: если живое обновление не работает (оператор режет соединение), раз в минуту перечитываем сами
+    // страховка: если живое обновление не работает (посредник или оператор режет соединение), каждые 30 секунд
+    // проверяем, изменилось ли что-то; с живым обновлением — полная сверка раз в 10 минут
     setInterval(() => {
       if (document.visibilityState !== 'visible' || !Store.online()) return;
       if (Store.pending.length && !Store._flushing) scheduleFlush(0);
-      if (Store.realtime !== 'SUBSCRIBED' ? sinceSync() > 55000 : sinceSync() > 10 * 60000) syncQuiet();
-    }, 60000);
+      if (Store.realtime !== 'SUBSCRIBED') { if (sinceSync() > 25000) pollQuiet(); } else if (sinceSync() > 10 * 60000) syncQuiet();
+    }, 30000);
   };
 
   function upsertLocal(kind, obj) {
@@ -430,7 +474,9 @@
       if (isNetErr(error)) throw new Error('Фото не загрузилось: база не отвечает. Попробуйте ещё раз позже');
       throw error;
     }
-    return bucket.getPublicUrl(path).data.publicUrl;
+    // в данные записываем постоянный адрес Supabase (а не посредника): показ сам пойдёт через посредника, если он включён
+    const url = bucket.getPublicUrl(path).data.publicUrl;
+    return PROXY && url.startsWith(PROXY) ? cfg.supabaseUrl + url.slice(PROXY.length) : url;
   };
 
   // ---------- Импорт рецепта по ссылке (через функцию Supabase) ----------
@@ -462,8 +508,8 @@
         const res = await fetch(url, { cache: 'no-store', ...(opts || {}), signal: ctrl.signal });
         const buf = await res.arrayBuffer();
         row.kb = Math.round(buf.byteLength / 102.4) / 10;
-        row.ok = res.status < 500;
-        if (!row.ok) row.note = 'ошибка ' + res.status;
+        row.ok = res.status < 400;
+        if (!row.ok) row.note = 'ответ с ошибкой ' + res.status + (res.status === 404 ? ' (адрес не найден)' : res.status === 401 || res.status === 403 ? ' (нет доступа)' : '');
       } catch (e) { row.note = ctrl.signal.aborted ? 'не дождались ответа' : 'нет соединения'; }
       clearTimeout(timer);
       row.ms = Math.round(performance.now() - t0);
@@ -475,9 +521,14 @@
     await probe('Сайт приложения (GitHub)', `./manifest.webmanifest?nocache=${t}`);
     if (cloudConfigured) {
       const h = { apikey: cfg.supabaseAnonKey };
-      await probe('База: короткий запрос', `${cfg.supabaseUrl}/auth/v1/settings`, { headers: h });
       const token = Store.session && Store.session.access_token;
-      if (token) await probe('База: все данные', `${cfg.supabaseUrl}/rest/v1/items?select=id,kind,data`, { headers: { ...h, Authorization: 'Bearer ' + token } }, 25000);
+      const all = '/rest/v1/items?select=id,kind,data&limit=150';
+      if (PROXY) {
+        await probe('Посредник: короткий запрос', `${PROXY}/auth/v1/settings`, { headers: h });
+        if (token) await probe('Посредник: данные', `${PROXY}${all}`, { headers: { ...h, Authorization: 'Bearer ' + token } }, 25000);
+      }
+      await probe('База напрямую: короткий запрос', `${cfg.supabaseUrl}/auth/v1/settings`, { headers: h });
+      if (token) await probe('База напрямую: данные', `${cfg.supabaseUrl}${all}`, { headers: { ...h, Authorization: 'Bearer ' + token } }, 25000);
     }
     await probe('Cloudflare: 100 КБ', `https://speed.cloudflare.com/__down?bytes=100000&nocache=${t}`);
     await probe('Библиотеки (jsDelivr)', `https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js?nocache=${t}`);

@@ -395,7 +395,7 @@
     return `<article class="p-recipe">
       <h1>${esc(r.title)}</h1>
       <p class="p-meta">${esc([r.category, serv, r.time].filter(Boolean).join(' · '))}${r.url ? `<br><small>${esc(r.url)}</small>` : ''}</p>
-      ${r.image ? `<img class="p-photo" src="${esc(r.image)}" alt="">` : ''}
+      ${r.image ? `<img class="p-photo" src="${esc(Store.mediaUrl(r.image))}" alt="">` : ''}
       <div class="p-cols">
         <section><h2>Ингредиенты</h2><ul>${(r.ingredients || []).map((i, n) => `<li>${App.ingLineHTML(r, i, n, false)}</li>`).join('') || '<li>—</li>'}</ul></section>
         <section><h2>Приготовление</h2>${steps.length ? `<ol>${steps.map((s) => `<li>${App.stepHTML(r, s)}</li>`).join('')}</ol>` : '<p>—</p>'}

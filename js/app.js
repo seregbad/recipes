@@ -272,7 +272,7 @@
         const pct = a.total ? Math.round((a.have / a.total) * 100) : 0;
         const host = r.url ? safeHost(r.url) : '';
         return `<a class="rrow" role="row" href="#/recipe/${encodeURIComponent(r.id)}">
-          ${hook('recipeRowStart', r)}<span class="thumb">${r.image ? `<img src="${esc(r.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : icon('book')}</span>
+          ${hook('recipeRowStart', r)}<span class="thumb">${r.image ? `<img src="${esc(Store.mediaUrl(r.image))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : icon('book')}</span>
           <span class="rtitle"><b>${esc(r.title)}</b>${host || lastCooked(r) ? `<small>${esc([host, lastCooked(r) ? 'готовили ' + U.ago(lastCooked(r)) : ''].filter(Boolean).join(' · '))}</small>` : ''}</span>
           <span class="rcat">${esc(r.category || '')}</span>
           <span class="rhave">${a.total ? `<span class="meter"><i style="width:${pct}%"></i></span><small>${a.have} из ${a.total}</small>` : '<small>—</small>'}</span>
@@ -435,7 +435,7 @@
     return `
       <a class="back" href="#/recipes">${icon('back')}Рецепты</a>
       <article class="recipe">
-        ${r.image ? `<div class="hero"><img src="${esc(r.image)}" alt="" referrerpolicy="no-referrer">
+        ${r.image ? `<div class="hero"><img src="${esc(Store.mediaUrl(r.image))}" alt="" referrerpolicy="no-referrer">
           <label class="hero-btn" title="Заменить фото">${icon('camera')}<input type="file" accept="image/*" data-act-change="photo-recipe" data-id="${esc(r.id)}" hidden></label></div>` : ''}
         <h1>${esc(r.title)}</h1>
         ${r.image ? '' : `<label class="btn small add-photo">${icon('camera')}<span>Добавить фото блюда</span><input type="file" accept="image/*" data-act-change="photo-recipe" data-id="${esc(r.id)}" hidden></label>`}
@@ -527,7 +527,7 @@
         <label>Заметки<textarea name="notes" rows="2" placeholder="что поменяли, кому понравилось…">${esc(r.notes || '')}</textarea></label>
         <div class="photo-field">
           <input type="hidden" name="image" value="${esc(r.image || '')}">
-          <div class="photo-prev">${r.image ? `<img src="${esc(r.image)}" alt="" referrerpolicy="no-referrer">` : icon('camera')}</div>
+          <div class="photo-prev">${r.image ? `<img src="${esc(Store.mediaUrl(r.image))}" alt="" referrerpolicy="no-referrer">` : icon('camera')}</div>
           <div class="row wrap">
             <label class="btn">${icon('camera')}<span>${r.image ? 'Заменить фото' : 'Добавить фото'}</span><input type="file" accept="image/*" data-act-change="photo-form" hidden></label>
             <button type="button" class="btn danger-ghost" data-act="photo-clear" ${r.image ? '' : 'hidden'}>Убрать</button>
@@ -608,7 +608,7 @@
   function setFormPhoto(form, url) {
     form.image.value = url || '';
     const prev = form.querySelector('.photo-prev');
-    if (prev) prev.innerHTML = url ? `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer">` : icon('camera');
+    if (prev) prev.innerHTML = url ? `<img src="${esc(Store.mediaUrl(url))}" alt="" referrerpolicy="no-referrer">` : icon('camera');
     const clear = form.querySelector('[data-act="photo-clear"]');
     if (clear) clear.hidden = !url;
   }
@@ -1689,7 +1689,7 @@
         <h2>Где хранятся данные</h2>
         ${cloud
           ? `<p>${icon('check')} Общая база Supabase: изменения сразу видны вам обоим.<br><span class="muted small">Вы вошли как ${esc(Store.userEmail())}</span></p>
-             <p class="small">${Store.status().pending ? `<b>Не отправлено: ${Store.status().pending}</b>` : 'Все изменения отправлены'}${Store.lastSync ? ` · данные обновлены ${esc(U.ago(U.toISODate(new Date(Store.lastSync))))} в ${new Date(Store.lastSync).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}` : ''}${{ offline: ' · <b>нет сети</b>', down: ' · <b>база не отвечает</b>', auth: ' · <b>нет доступа к базе</b>' }[Store.status().net] || ''}${Store.realtime && Store.realtime !== 'SUBSCRIBED' ? ' · живое обновление не подключено, данные перечитываются раз в минуту' : ''}</p>
+             <p class="small">${Store.status().pending ? `<b>Не отправлено: ${Store.status().pending}</b>` : 'Все изменения отправлены'}${Store.lastSync ? ` · данные обновлены ${esc(U.ago(U.toISODate(new Date(Store.lastSync))))} в ${new Date(Store.lastSync).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}` : ''}${{ offline: ' · <b>нет сети</b>', down: ' · <b>база не отвечает</b>', auth: ' · <b>нет доступа к базе</b>' }[Store.status().net] || ''}${Store.proxied ? ' · через посредника (Яндекс Облако), изменения проверяются каждые 30 секунд' : Store.realtime && Store.realtime !== 'SUBSCRIBED' ? ' · живое обновление не подключено, изменения проверяются каждые 30 секунд' : ''}</p>
              <div class="row wrap">
                <button class="btn primary" data-act="sync">${icon('repeat')}<span>Синхронизировать сейчас</span></button>
                <button class="btn" data-act="diag">${icon('search')}<span>Проверить связь</span></button>
@@ -1735,11 +1735,19 @@
   // вывод по результатам проверки связи — простыми словами
   function diagVerdict(rows) {
     const by = (s) => rows.find((r) => r.name.startsWith(s));
-    const site = by('Сайт'), small = by('База: короткий'), big = by('База: все'), cf = by('Cloudflare'), lib = by('Библиотеки');
-    if (site && !site.ok && (!small || !small.ok)) return '<b>Нет интернета.</b> Изменения сохраняются на устройстве и отправятся, когда сеть появится.';
-    if (small && !small.ok) return '<b>База недоступна с этого интернета.</b> Сайт открывается, а Supabase не отвечает: похоже на блокировку у оператора. Без VPN синхронизация работать не будет; изменения копятся на устройстве и уйдут, когда связь с базой появится. Решение — прокси для базы на российском хостинге (см. инструкцию, раздел «Если без VPN не синхронизируется»).';
-    if ((big && !big.ok) || (cf && !cf.ok)) return '<b>Оператор обрывает большие ответы от Cloudflare</b> (на нём работает Supabase): короткие запросы проходят, а загрузка данных — нет. Поэтому без VPN кажется, что синхронизации нет. Решение — прокси для базы на российском хостинге (см. инструкцию, раздел «Если без VPN не синхронизируется»).';
-    if (lib && !lib.ok) return '<b>База доступна</b>, но не загружаются библиотеки с jsDelivr (нужны для чеков и файлов). Синхронизации это не мешает.';
+    const site = by('Сайт'), small = by('База напрямую: короткий'), big = by('База напрямую: данные'), cf = by('Cloudflare'), lib = by('Библиотеки');
+    const pSmall = by('Посредник: короткий'), pBig = by('Посредник: данные');
+    const howTo = ' Решение — посредник в Яндекс Облаке (файл «ИНСТРУКЦИЯ Яндекс Облако.md»).';
+    if (site && !site.ok && (!small || !small.ok) && (!pSmall || !pSmall.ok)) return '<b>Нет интернета.</b> Изменения сохраняются на устройстве и отправятся, когда сеть появится.';
+    // посредник включён: синхронизация идёт через него, прямой доступ к базе уже не важен
+    if (pSmall) {
+      if (!pSmall.ok) return `<b>Посредник не отвечает</b> (${esc(pSmall.note)}). Проверьте адрес proxyUrl в js/config.js и спецификацию шлюза в Яндекс Облаке — по шагам в «ИНСТРУКЦИЯ Яндекс Облако.md», раздел «Если не заработало».`;
+      if (pBig && !pBig.ok) return `<b>Посредник отвечает, но данные через него не идут</b> (${esc(pBig.note)}). Скорее всего, в спецификации шлюза не передаются заголовки или запрос с параметрами — см. «Если не заработало» в инструкции.`;
+      return '<b>Посредник работает.</b> Синхронизация идёт через Яндекс Облако, VPN не нужен. Изменения второго человека появляются в течение 30 секунд.';
+    }
+    if (small && !small.ok) return '<b>База недоступна с этого интернета.</b> Сайт открывается, а Supabase не отвечает: похоже на блокировку у оператора. Без VPN синхронизация работать не будет; изменения копятся на устройстве и уйдут, когда связь с базой появится.' + howTo;
+    if ((big && !big.ok) || (cf && !cf.ok)) return '<b>Оператор обрывает большие ответы от Cloudflare</b> (на нём работает Supabase): короткие запросы проходят, а загрузка данных — нет. Поэтому без VPN кажется, что синхронизации нет.' + howTo;
+    if (lib && !lib.ok) return '<b>База доступна</b>, но не загружаются библиотеки с jsDelivr (нужны для загрузки рецептов из файлов). Синхронизации это не мешает.';
     const slow = rows.some((r) => r.ok && r.ms > 6000);
     return slow ? '<b>Связь есть, но медленная.</b> Синхронизация работает, просто дольше обычного.' : '<b>Всё доступно.</b> Синхронизация должна работать. Если сейчас включён VPN — повторите проверку без него.';
   }
