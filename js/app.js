@@ -76,10 +76,21 @@
     }
     return catalogCache;
   }
+  // категория продукта: точное название → прежнее название → ближайший продукт справочника («Сыр Гауда 45%» → «Сыры»)
+  const catMemo = new Map();
+  let catMemoFor = null;
   const catOf = (name) => {
+    const list = catalog();
+    if (catMemoFor !== list) { catMemo.clear(); catMemoFor = list; }
     const n = U.norm(name);
-    const hit = catalog().find((c) => U.norm(c.name) === n);
-    return hit ? hit.cat : 'Другое';
+    if (catMemo.has(n)) return catMemo.get(n);
+    const legacy = Object.keys(window.INGREDIENT_LEGACY || {}).find((k) => U.norm(k) === n);
+    const exact = (x) => list.find((c) => U.norm(c.name) === U.norm(x));
+    let hit = exact(name) || (legacy && exact(window.INGREDIENT_LEGACY[legacy]));
+    if (!hit) { const key = U.ingKey(name, list); hit = list.find((c) => c.name === key); }
+    const cat = hit ? hit.cat : 'Другое';
+    catMemo.set(n, cat);
+    return cat;
   };
   const ingLabel = (i) => i.key || i.name;
 
@@ -976,19 +987,60 @@
   }
   // Строка чека → продукт. Главное слово в чеке стоит первым («Молоко Пискар. 2.5%», «Сырок глаз. какао»),
   // поэтому продукт из справочника ищем по первым словам, а не по всей строке (иначе сырок с какао стал бы «какао»).
-  const RC_GENERIC = new Set(['фрукт', 'фрукты', 'овощ', 'овощи', 'продукт', 'напиток', 'изделие', 'набор', 'бзмж', 'охл', 'зам']);
+  const RC_GENERIC = new Set(['фрукт', 'фрукты', 'овощ', 'овощи', 'продукт', 'напиток', 'изделие', 'набор', 'бзмж', 'охл', 'охлажденная', 'охлажденный', 'охлажденное',
+    'зам', 'замороженный', 'замороженная', 'свежий', 'свежая', 'свежее', 'вес', 'весовой', 'весовая', 'фас', 'фасованный', 'фасованная', 'упак', 'халяль', 'гост', 'пэт', 'пюр-пак', 'пюрпак', 'пастер', 'пастериз', 'ультрапаст']);
+  // Разные написания одного и того же в чеках: «свиная», «свин.» → свинина; «цыплёнка-бройлера», «ЦБ» → курица; «томаты» → помидор
+  const RC_CANON = [
+    [/^(свинина|свинины|свиная|свиной|свиные|свиное|свиную|свин|свино)$/, 'свинина'],
+    [/^(говядина|говядины|говяжья|говяжий|говяжьи|говяжье|говяжью|гов|говяж)$/, 'говядина'],
+    [/^(курица|курицы|куриная|куриный|куриные|куриное|куриную|кур|курин|цыпленок|цыпленка|цыплят|цыплята|цыпл|бройлер|бройлера|бройлеров|цб)$/, 'курица'],
+    [/^(индейка|индейки|индюшиная|индюшиный|индюшиное|индюшиные|индюшка|индюшки|инд)$/, 'индейка'],
+    [/^(баранина|баранины|баранья|бараний|бараньи|баранье)$/, 'баранина'],
+    [/^(телятина|телятины|телячья|телячий|телячьи|телячье)$/, 'телятина'],
+    [/^(утка|утки|утиная|утиный|утиные|утиное)$/, 'утка'],
+    [/^(томаты|томат|томатов)$/, 'помидор'],
+    [/^(глаз|глазир|глазированные|глазированный)$/, 'глазированный'],
+    [/^(окорочок|окорочка|окорочки|окорочек)$/, 'окорочка'],
+    [/^(бедрышки|бедрышко|бедрышек|бедро|бедра)$/, 'бедра'],
+    [/^(крыло|крылья|крылышки|крылышко|крылышек)$/, 'крылья'],
+    [/^(яйцо|яйца|яиц)$/, 'яйца'],
+  ];
+  const rcCanon = (w) => { const hit = RC_CANON.find(([re]) => re.test(w)); return hit ? hit[1] : w; };
+  const rcStems = (s) => U.stems(U.norm(s).split(/[\s-]+/).map(rcCanon).join(' '));
+  let rcCatFor = null, rcCatList = [];
+  const rcCat = (cat) => { if (rcCatFor !== cat) { rcCatFor = cat; rcCatList = cat.map((c) => ({ name: c.name, cs: rcStems(c.name) })).filter((c) => c.cs.length); } return rcCatList; };
+  // основа из чека подходит к основе из справочника (как в общем сопоставлении продуктов)
+  const rcFits = (a, b) => a === b || (b.length >= 3 && a.startsWith(b)) || (a.length >= 5 && b.startsWith(a) && a.length / b.length >= 0.7);
+  // …и строгое совпадение для главного слова: «салфетки» не должны стать «салом», а «сырок» — «сыром»
+  const rcSame = (a, b) => (a.startsWith(b) || b.startsWith(a)) && Math.abs(a.length - b.length) <= 1;
+  // Строка чека → самый точный продукт справочника: «Свинина охл Лопатка н.к» → «свинина лопатка», «Шея свиная» → «свинина шея»,
+  // «Филе цыплёнка-бройлера» → «куриное филе», «Сыр Гауда 48%» → «сыр гауда». Главное слово в чеке стоит первым или вторым,
+  // поэтому продукт обязан совпасть с одним из них (иначе сырок с какао стал бы «какао»).
   function rcProduct(name, cat, vocab) {
-    const words = productName(Receipt.fixName(name, vocab.list)).split(' ').filter((w) => (w.length >= 3 || /^[a-z]{2,}$/.test(w)) && !RC_GENERIC.has(w));
-    const head = words.slice(0, 2);
-    for (const probe of [head.join(' '), head[0], head[1]]) {
-      if (!probe) continue;
-      const key = U.ingKey(probe, cat);
-      // «салфетки» не должны стать «салом», а «сырок» — «сыром»: основы слов должны почти совпадать по длине
-      if (cat.some((c) => c.name === key) && Math.abs(U.stem(U.norm(key).split(' ')[0]).length - U.stem(probe.split(' ')[0]).length) <= 1) return key;
+    const words = productName(Receipt.fixName(name, vocab.list)).split(/[\s-]+/).filter((w) => (w.length >= 3 || /^[a-z]{2,}$/.test(w) || w === 'цб') && !RC_GENERIC.has(w));
+    const ts = rcStems(words.join(' '));
+    let best = null, bs = 0;
+    if (ts.length) {
+      for (const it of rcCat(cat)) {
+        let pos = 0;
+        const all = it.cs.every((s) => { const at = ts.findIndex((t) => rcFits(t, s)); if (at < 0) return false; pos += ts.length - at; return true; });
+        if (!all) continue;
+        const h0 = it.cs.some((s) => rcSame(s, ts[0])), h1 = ts.length > 1 && it.cs.some((s) => rcSame(s, ts[1]));
+        if (!h0 && !h1) continue;
+        const score = (h0 ? 1000 : 0) + it.cs.length * 100 + pos * 5 + it.cs.join('').length;
+        if (score > bs) { bs = score; best = it; }
+      }
     }
-    return words.slice(0, 3).join(' ') || productName(name);
+    return best ? best.name : words.slice(0, 3).join(' ') || productName(name);
   }
-
+  // что подставить в строку чека: запомненное название или продукт справочника.
+  // Если раньше строку назвали общо («свинина»), а в справочнике есть точнее («свинина лопатка») — берём точное.
+  function rcName(orig, cat, vocab) {
+    const product = rcProduct(orig, cat, vocab), learned = rcLookup(orig);
+    if (!learned) return product;
+    const inCat = cat.some((c) => c.name === product);
+    return inCat && U.sameIng(learned.name, product) && U.stems(product).length > U.stems(learned.name).length ? product : learned.name;
+  }
   async function openReceiptScan(files) {
     const id = ++receiptScanId;
     const setStage = (text, p) => {
@@ -1018,8 +1070,7 @@
         date: !res.qr && res.stamp && res.stamp.date <= U.today() ? res.stamp.date : undefined,
         items: res.items.map((it) => {
           // 1) так уже называли эту строку чека раньше; 2) продукт из справочника; 3) название с чека без фасовки
-          const learned = rcLookup(it.name);
-          return { name: learned ? learned.name : rcProduct(it.name, cat, words), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true, fixed: it.fixed, doubt: it.doubt };
+          return { name: rcName(it.name, cat, words), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true, fixed: it.fixed, doubt: it.doubt };
         }),
       };
       // скидка из чека сходится с итогом — сразу разносим её по позициям
@@ -1056,8 +1107,7 @@
       const ocr = d.ocrItems || d.items.map((i) => ({ name: i.orig, raw: i.orig, total: i.total }));
       d.ocrItems = ocr;
       d.items = f.items.map((it) => {
-        const learned = rcLookup(it.name);
-        return { name: learned ? learned.name : rcProduct(it.name, cat, words), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true };
+        return { name: rcName(it.name, cat, words), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true };
       });
       const m = d.qrraw.match(/fn=(\d+).*?i=(\d+).*?fp=(\d+)/);
       d.qr = { ...(d.qr || {}), date: f.date || (d.qr && d.qr.date) || (d.stamp && d.stamp.date), time: f.time || (d.qr && d.qr.time) || (d.stamp && d.stamp.time) || '', sum: f.total || (d.qr && d.qr.sum), key: (d.qr && d.qr.key) || (m ? `${m[1]}-${m[2]}-${m[3]}` : ''), raw: d.qrraw };
@@ -1791,6 +1841,7 @@
           <button class="btn" data-act="export">${icon('download')}<span>Сохранить копию (.json)</span></button>
           <label class="btn">${icon('upload')}<span>Загрузить копию</span><input type="file" accept=".json,application/json" data-act-change="import" hidden></label>
           <button class="btn" data-act="seed">${icon('book')}<span>Добавить блюда из «Меню недели»</span></button>
+          ${seedTargets().length ? `<button class="btn primary" data-act="seed-full">${icon('book')}<span>Дополнить наши блюда полными рецептами (${seedTargets().length})</span></button>` : ''}
           ${(() => {
             const seeds = new Set((window.SEED_RECIPES || []).map((s) => U.norm(s[0])));
             const n = Store.all('recipes').filter((r) => seeds.has(U.norm(r.title)) && !(r.ingredients || []).some((i) => i.qty)).length;
@@ -1815,6 +1866,20 @@
         ${ocrStatsHtml()}
         <button class="btn" data-act="ocr-bench">${icon('search')}<span>Проверить распознавание на своих чеках</span></button>
       </section>`;
+  }
+
+  // ---------- Наши блюда из «Меню недели»: состав (seed.js) + шаги (seed-steps.js) ----------
+  const SEED_NOTE = 'Из нашей таблицы «Меню недели». Состав и количества типовые, поправьте под себя.';
+  const seedMap = () => new Map((window.SEED_RECIPES || []).map((s) => [U.norm(s[0]), s]));
+  const seedFull = (s) => {
+    const x = (window.SEED_STEPS || {})[s[0]] || [];
+    return { time: x[0] || '', ings: s[3] + (x[1] ? '; ' + x[1] : ''), steps: (x[2] || []).join('\n'), note: x[3] || '' };
+  };
+  const ingSig = (list) => (list || []).map((i) => U.norm(`${i.name} ${i.qty || ''} ${i.unit || ''}`)).join('|');
+  // наши блюда, в которых ещё нет шагов приготовления
+  function seedTargets() {
+    const m = seedMap();
+    return Store.all('recipes').filter((r) => !String(r.steps || '').trim() && m.has(U.norm(r.title)) && seedFull(m.get(U.norm(r.title))).steps);
   }
 
   // вывод по результатам проверки связи — простыми словами
@@ -1975,6 +2040,23 @@
       refresh();
     },
     'toggle-scale-steps': (el) => { ui.scaleSteps = el.checked; saveUI(); refresh(); },
+    // дописать в наши блюда шаги приготовления, время и недостающие ингредиенты
+    'seed-full': async () => {
+      const targets = seedTargets();
+      if (!targets.length) { toast('Все наши блюда уже с рецептами'); return; }
+      if (!(await confirmBox(`Дописать шаги приготовления и время в ${targets.length} ${U.plural(targets.length, 'блюдо', 'блюда', 'блюд')} из «Меню недели»? Состав обновится только там, где вы его не меняли. Блюда, в которых шаги уже записаны, не изменятся.`, 'Дополнить'))) return;
+      const m = seedMap();
+      let kept = 0;
+      await Store.saveMany('recipes', targets.map((r) => {
+        const s = m.get(U.norm(r.title)), f = seedFull(s);
+        const untouched = ingSig(r.ingredients) === ingSig(parseIngredients(s[3].split(';').join('\n')));
+        if (!untouched) kept++;
+        const notes = [String(r.notes || '').replace(SEED_NOTE, 'Рецепт типовой: количества и шаги можно поправить под себя.'), f.note].filter((x) => x && x.trim()).join('\n');
+        return { ...r, steps: f.steps, time: r.time || f.time, servings: r.servings || servWord(s[2]), notes,
+          ingredients: untouched ? parseIngredients(f.ings.split(';').join('\n')) : r.ingredients };
+      }));
+      toast(`Рецепты дополнены: ${targets.length}${kept ? `. В ${kept} состав оставлен вашим` : ''}`);
+    },
     'seed-qty': async () => {
       const seeds = new Map((window.SEED_RECIPES || []).map((s) => [U.norm(s[0]), s]));
       const targets = Store.all('recipes').filter((r) => seeds.has(U.norm(r.title)) && !(r.ingredients || []).some((i) => i.qty));
@@ -2065,11 +2147,11 @@
     },
     seed: async () => {
       const existing = new Set(Store.all('recipes').map((r) => U.norm(r.title)));
-      const list = (window.SEED_RECIPES || []).filter(([t]) => !existing.has(U.norm(t))).map(([title, category, servings, ings]) => ({
-        title, category, status: 'liked', url: '', image: '', servings: servWord(servings), time: '', steps: '',
-        notes: 'Из нашей таблицы «Меню недели». Состав и количества типовые, поправьте под себя.',
-        ingredients: parseIngredients(ings.split(';').join('\n')),
-      }));
+      const list = (window.SEED_RECIPES || []).filter(([t]) => !existing.has(U.norm(t))).map((s) => {
+        const f = seedFull(s);
+        return { title: s[0], category: s[1], status: 'liked', url: '', image: '', servings: servWord(s[2]), time: f.time, steps: f.steps,
+          notes: [SEED_NOTE, f.note].filter(Boolean).join('\n'), ingredients: parseIngredients(f.ings.split(';').join('\n')) };
+      });
       if (!list.length) { toast('Все блюда из таблицы уже добавлены'); return; }
       await Store.saveMany('recipes', list);
       toast(`Добавлено блюд: ${list.length}`);
@@ -2643,7 +2725,7 @@
     isDesktop, ui, saveUI, render, refresh, route, actions, forms, views: extraViews, hooks, NAV, renderNav, icons: I,
     onReady: (fn) => readyHooks.push(fn),
     openModal, closeModal, toast, fail, confirmBox, icon, esc,
-    recipeForm, parseIngredients, fillRecipeForm, guessCategory, importRecipeFiles, productName,
+    recipeForm, parseIngredients, fillRecipeForm, guessCategory, importRecipeFiles, productName, rcProduct, rcVocab,
     openReceiptScan, addToShopping, addToPantry, openPickItems, openPicker, addDish,
     catalog, catOf, pantry, analyze, ingLabel, ingText, scaleOf, effIng, ingPlain, ingLineHTML, nameOf, stepHTML, recipeSteps, statusBadge, safeHost, lastCooked, cookedText,
     menuDay, menuId, weekDays, weekDishes, SLOTS, SLOT_CATS, WD, dishTitle, autofillWeek, weekToShopping, inFreezer,
