@@ -7,7 +7,7 @@ window.APP_CONFIG = {
   supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhqd2Jwam1hamR4cGxoemNkaXZiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQwNzgwNzAsImV4cCI6MjEwOTY1NDA3MH0.5hiF5B9H9ztOkbExNm6moRQIp-UkKKB-mtq2OX-u_S0',
   // Посредник в Яндекс Облаке, если без VPN база не отвечает (см. «ИНСТРУКЦИЯ Яндекс Облако.md»).
   // Пусто — приложение ходит в Supabase напрямую. Пример: 'https://d5dxxxxxxxxxxxxxxxx.apigw.yandexcloud.net'
-  proxyUrl: '',
+  proxyUrl: 'https://d5dfqihdp1e6p399jrhh.a6hc9vya.apigw.yandexcloud.net',
   // имя функции загрузки рецептов по ссылке (Supabase → Edge Functions)
   importFunction: 'rapid-action',
   // за сколько дней предупреждать о конце срока годности заготовок
