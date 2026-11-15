@@ -288,21 +288,111 @@
     return { text, conf: conf / Math.max(1, canvases.length) };
   }
 
+  // ---------- Подготовка фото для нейросети (PP-OCR) ----------
+  // Где на фото текст: по «точкам букв» (тёмное на светлом). Работает на любом фоне, в том числе когда
+  // белый чек лежит на светлом столе и по яркости бумагу от стола не отличить. Рамка — в пикселях источника.
+  function textBox(src) {
+    const c = toCanvas(src, 1000);
+    const { g, w, h } = toGray(c);
+    const integ = new Float64Array((w + 1) * (h + 1));
+    for (let y = 1; y <= h; y++) { let row = 0; for (let x = 1; x <= w; x++) { row += g[(y - 1) * w + x - 1]; integ[y * (w + 1) + x] = integ[(y - 1) * (w + 1) + x] + row; } }
+    const R = Math.max(3, Math.round(Math.min(w, h) / 80)), area = (2 * R + 1) * (2 * R + 1);
+    const col = new Uint32Array(w), row = new Uint32Array(h);
+    let n = 0;
+    for (let y = R; y < h - R; y++) {
+      for (let x = R; x < w - R; x++) {
+        const m = (integ[(y + R + 1) * (w + 1) + x + R + 1] - integ[(y - R) * (w + 1) + x + R + 1] - integ[(y + R + 1) * (w + 1) + x - R] + integ[(y - R) * (w + 1) + x - R]) / area;
+        const v = g[y * w + x];
+        if (m > 100 && v < m * 0.8 && m - v > 18) { col[x]++; row[y]++; n++; }
+      }
+    }
+    if (n < 300) return null;
+    // отбрасываем по краям по ~1% точек: случайные тёмные пятна вне чека не растягивают рамку
+    const cut = (a, share) => {
+      let acc = 0, i1 = 0, i2 = a.length - 1;
+      for (let i = 0; i < a.length; i++) { acc += a[i]; if (acc >= n * share) { i1 = i; break; } }
+      acc = 0;
+      for (let i = a.length - 1; i >= 0; i--) { acc += a[i]; if (acc >= n * share) { i2 = i; break; } }
+      return [i1, i2];
+    };
+    const [x1, x2] = cut(col, 0.01), [y1, y2] = cut(row, 0.004);
+    if (x2 - x1 < 20 || y2 - y1 < 20) return null;
+    const px = (x2 - x1) * 0.06 + 4, py = (y2 - y1) * 0.02 + 6, k = src.width / w;
+    const X = Math.max(0, (x1 - px) * k), Y = Math.max(0, (y1 - py) * k);
+    return { x: X, y: Y, w: Math.min(src.width - X, (x2 - x1 + 2 * px) * k), h: Math.min(src.height - Y, (y2 - y1 + 2 * py) * k) };
+  }
+  function scaleCanvas(c, k) {
+    const o = document.createElement('canvas');
+    o.width = Math.max(1, Math.round(c.width * k)); o.height = Math.max(1, Math.round(c.height * k));
+    const ctx = o.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(c, 0, 0, o.width, o.height);
+    return o;
+  }
+  const MAX_PX = 9e6; // больше — телефону тяжело
+  const fitScale = (c, k) => Math.max(0.15, Math.min(k, 3.5, Math.sqrt(MAX_PX / (c.width * c.height))));
+  // Найти чек, выровнять, привести к масштабу, удобному для сети (ширина текста ~800 px).
+  function prepareNN(img) {
+    const box = textBox(img);
+    let src = toCanvas(img, 4200, box ? {
+      x: Math.max(0, box.x - box.w * 0.1), y: Math.max(0, box.y - box.h * 0.03),
+      w: Math.min(img.width - Math.max(0, box.x - box.w * 0.1), box.w * 1.2), h: Math.min(img.height - Math.max(0, box.y - box.h * 0.03), box.h * 1.06),
+    } : undefined);
+    const scale = fitScale(src, 800 / src.width);
+    return { src, canvas: scaleCanvas(src, scale), scale, crop: !!box };
+  }
+
   // ---------- Разбор текста чека в позиции ----------
   // \b и \W в JS не понимают кириллицу — граница слова через (?![а-яё])
   const W = (s) => s + '(?![а-яё])';
   const SKIP = new RegExp([
     '(?:^|\\s)(?:ооо|оао|зао|пао|ао|ип)(?=\\s|«|"|$)',
-    'инн', 'кассир', W('касса'), 'ккт', 'рн\\s', 'зн\\s', W('фн'), W('фд'), W('фп'), 'смена', 'кассовый', W('чек'),
+    // короткие сокращения — только отдельным словом: «инн» есть внутри «блинная», «длиннозёрный»
+    '(?:^|[^а-яё])(?:инн|рн|зн|фн|фд|фп)(?![а-яё])', 'кассир', W('касса'), 'ккт', 'смена', 'кассовый', W('чек'),
     'приход', 'возврат', 'сайт', 'nalog', 'офд', 'www', 'http', 'спасибо', 'адрес', 'место расч', W('сно'), W('осн'), W('усн'),
     'продавец', 'покупател', 'телефон', 'e-?mail', 'бонус', 'балл', W('карт[аы]'), 'оплат', 'получено', 'сдача', 'наличн',
     'безнал', 'электрон', 'скидк', 'ндс', 'сумма', 'признак', 'способ', 'предмет', W('товар'), W('код'), 'штрих', 'дисконт',
-    'экономия', 'округл', 'номер', W('qr'), 'ждём', 'ждем',
+    'экономия', 'округл', 'номер', W('qr'), 'ждём', 'ждем', 'терминал', 'мерчант', 'одобрено', 'bluetooth', 'rrn', 'сбербанк', 'идентификатор', 'комисси',
   ].join('|'), 'i');
-  const TOTAL = /^[^а-яёa-z0-9]*(итого|итог|всего|подытог)(?![а-яё])/i;
   const MONEY = '\\d{1,6}[.,]\\d{2}';
+  const MONEY_END = new RegExp('(' + MONEY + ')\\s*\\S?$');
 
   const toNum = (s) => parseFloat(String(s).replace(/\s/g, '').replace(',', '.'));
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const decs = (s) => (String(s).split(/[.,]/)[1] || '').length;
+  // расстояние Левенштейна: сколько букв/цифр надо поменять, чтобы из одной строки получить другую
+  function lev(a, b) {
+    if (a === b) return 0;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+  // латинские буквы, неотличимые от русских: распознавание часто путает их («TOBAPA» вместо «ТОВАРА»)
+  const LOOK = { A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х', Y: 'У', a: 'а', c: 'с', e: 'е', o: 'о', p: 'р', x: 'х', y: 'у', k: 'к' };
+  // слово, где русские буквы перемешаны с похожими латинскими → чистая кириллица; настоящая латиница (FAMILIA) не трогается
+  const cyr = (line) => line.replace(/[A-Za-zА-Яа-яЁё]+/g, (w) => (
+    /[A-Za-z]/.test(w) && /[А-Яа-яЁё]/.test(w) && /^[ABCEHKMOPTXYaceopxyk]+$/.test(w.replace(/[А-Яа-яЁё]/g, ''))
+      ? w.replace(/[A-Za-z]/g, (ch) => LOOK[ch] || ch) : w));
+  // «скелет» строки для поиска служебных слов: только буквы, заглавные, латиница приведена к кириллице
+  const skel = (s) => String(s).toUpperCase().replace(/[A-Z]/g, (ch) => LOOK[ch] || ch).replace(/[^A-ZА-ЯЁ]/g, '');
+  // строка начинается со слова word с точностью до maxD ошибок распознавания
+  function fuzzyStart(line, word, maxD) {
+    const k = skel(line);
+    if (k.length < word.length - maxD) return false;
+    for (let L = word.length - maxD; L <= word.length + maxD; L++) if (lev(k.slice(0, L), word) <= maxD) return true;
+    return false;
+  }
+  const isCode = (line) => fuzzyStart(line, 'КОДТОВАРА', 3);
+  // строки оплаты: «Сумма (руб): 2597.37», «Безналичными =2597.37»
+  const isPay = (line) => MONEY_END.test(line) && (fuzzyStart(line, 'СУММА', 1) || fuzzyStart(line, 'БЕЗНАЛИЧНЫМИ', 3) || fuzzyStart(line, 'НАЛИЧНЫМИ', 2));
+  const isDiscount = (line) => /скидк|дисконт|экономия/i.test(line) || (skel(line).length <= 9 && MONEY_END.test(line) && fuzzyStart(line, 'СКИДКА', 2));
+  const isTotal = (line) => /^[^а-яёa-z0-9]*(итого|итог|всего|подытог)(?![а-яё])/i.test(line) ||
+    (MONEY_END.test(line) && skel(line).length <= 6 && (fuzzyStart(line, 'ИТОГ', 1) || fuzzyStart(line, 'ИТОГО', 1)));
+
   // частые ошибки распознавания внутри чисел: О→0, З→3, б→6, l/I/|→1
   function fixNumbers(line) {
     return line.replace(/[\dОоOЗзбlI|SВ]+[.,]?[\dОоOЗзбlI|SВ]*/g, (tok) => {
@@ -321,62 +411,112 @@
       .replace(/\s{2,}/g, ' ')
       .trim()
       .replace(/^[\s.,:;=-]+|[\s.,:;=-]+$/g, '');
-    if (n && n === n.toUpperCase() && /[А-ЯЁ]/.test(n)) n = n.charAt(0) + n.slice(1).toLowerCase(); // «МОЛОКО 3,2%» → «Молоко 3,2%»
+    // распознавание путает регистр («СыРок ГлАЗ») — приводим к обычному виду
+    if (n && /[А-ЯЁ]/.test(n.slice(1))) n = n.charAt(0).toUpperCase() + n.slice(1).toLowerCase();
     return n;
+  }
+  // «…1кг, кг» / «…500г. ШТ.» — единица продажи в конце названия
+  function splitUnit(name) {
+    const m = name.match(/[\s.,]+(кг|шт|л)\.?$/i);
+    return m ? { name: name.slice(0, m.index).replace(/[\s.,]+$/, ''), unit: m[1].toLowerCase() } : { name, unit: '' };
   }
   // «0.452 x 199.99 = 90.40», «1 * 54,99 =54.99», «89.99 x 1»
   function parseCalc(line) {
     // знак умножения бывает распознан дважды: «1 хх 94.99», «1 х х 94.99»
     const m = line.match(/(\d{1,6}(?:[.,]\d{1,3})?)\s*(?:шт|кг|л|г)?\.?\s*[xх×*](?:\s*[xх×*])?\s*(\d{1,6}(?:[.,]\d{1,3})?)\s*(?:шт|кг|л|руб|р)?\.?(?:[^\dа-яё]{0,6}(\d{1,6}[.,]\d{2}))?/i);
     if (!m) return null;
-    const dec = (s) => (s.split(/[.,]/)[1] || '').length;
-    const a = toNum(m[1]), b = toNum(m[2]);
-    let qty, price;
-    if (dec(m[1]) === 2 && dec(m[2]) !== 2) { price = a; qty = b; } else { qty = a; price = b; }
-    let total = m[3] ? toNum(m[3]) : Math.round(qty * price * 100) / 100;
-    if (m[3] && Math.abs(qty * price - total) > Math.max(1, total * 0.05)) {
-      // одно из чисел распознано неверно — доверяем сумме строки, цену пересчитываем
-      if (qty > 0) price = Math.round((total / qty) * 100) / 100;
-    }
-    if (!(total > 0) || total > 1e6) return null;
-    return { qty, price, total, rest: line.slice(0, m.index).trim() };
+    // в расчёте всегда есть цена с копейками; «24х23 см» в названии — не расчёт
+    if (decs(m[1]) !== 2 && decs(m[2]) !== 2 && !m[3]) return null;
+    let qs = m[1], ps = m[2];
+    if (decs(m[1]) === 2 && decs(m[2]) !== 2) { ps = m[1]; qs = m[2]; }
+    const qty = toNum(qs), price = toNum(ps);
+    if (!(qty > 0) || !(price > 0) || qty * price > 1e6) return null;
+    return { qty, price, qs, ps, sum: m[3] ? toNum(m[3]) : null, rest: line.slice(0, m.index).trim() };
+  }
+  // Сверка «количество × цена = сумма». Если не сходится — одна из трёх цифр распознана неверно:
+  // исправляем ту, для которой нужна самая маленькая правка (1.305 × 179.99 = 249.29 → количество 1.385).
+  function repair(it) {
+    const calc = r2(it.qty * it.price);
+    if (it.sum == null) { it.total = calc; return; }
+    if (Math.abs(calc - it.sum) <= 0.011) { it.total = it.sum; return; }
+    const cands = [];
+    // «=94.99» иногда читается как «394.99» или «194.99» (знак «=» или метка слева прилипают к числу)
+    cands.push({ k: 'sum', v: calc, total: calc, d: it.sum.toFixed(2).endsWith(calc.toFixed(2)) ? 0 : lev(calc.toFixed(2), it.sum.toFixed(2)) });
+    const whole = !decs(it.qs);
+    const q = whole ? Math.round(it.sum / it.price) : Math.round((it.sum / it.price) * 1000) / 1000;
+    if (q > 0 && Math.abs(r2(q * it.price) - it.sum) <= 0.011) cands.push({ k: 'qty', v: q, total: it.sum, d: lev(q.toFixed(decs(it.qs)), String(it.qs).replace(',', '.')) });
+    const p = r2(it.sum / it.qty);
+    if (p > 0 && Math.abs(r2(it.qty * p) - it.sum) <= 0.011) cands.push({ k: 'price', v: p, total: it.sum, d: lev(p.toFixed(2), String(it.ps).replace(',', '.')) });
+    cands.sort((a, b) => a.d - b.d);
+    it.alts = cands; // запасные варианты: пригодятся, если не сойдётся итог чека
+    if (cands[0].d > 3) { it.total = it.sum; it.price = r2(it.sum / it.qty); it.doubt = true; return; } // цифры совсем не сходятся — верим сумме строки
+    applyFix(it, cands[0]);
+  }
+  function applyFix(it, c) {
+    if (c.k === 'qty') it.qty = c.v; else if (c.k === 'price') it.price = c.v;
+    it.total = c.total;
+    it.fixed = c.k; it.doubt = false;
   }
 
   function parseText(text) {
-    const lines = String(text || '').split(/\n+/).map((l) => fixNumbers(l.replace(/\s+/g, ' ').trim())).filter(Boolean);
+    const lines = String(text || '').split(/\n+/).map((l) => fixNumbers(cyr(l.replace(/\s+/g, ' ').trim()))).filter(Boolean);
+    const maxLen = Math.min(60, Math.max(24, ...lines.map((l) => l.length)));
     const items = [];
-    let pending = [], last = null, total = null, discount = 0;
+    let pending = [], last = null, total = null, discount = 0, stamp = null;
+    // название — строка прямо над расчётом; строка над ней добавляется, только если это перенос длинного названия
+    const takeName = (rest) => {
+      const p = pending;
+      let name = rest || '';
+      if (!name && p.length) name = p[p.length - 1].t;
+      const tail = rest ? p[p.length - 1] : p[p.length - 2], head = rest ? null : p[p.length - 1];
+      if (tail && (!head || tail.idx === head.idx - 1) && (tail.t.length >= maxLen * 0.75 || (head && head.t.length <= 5))) name = tail.t + ' ' + name;
+      return cleanName(name);
+    };
     lines.forEach((line, idx) => {
+      if (!stamp) {
+        const d = line.match(/(\d{2})[.\/](\d{2})[.\/](\d{4}|\d{2})\s+(\d{1,2})[:.](\d{2})(?!\d)/);
+        if (d && +d[1] >= 1 && +d[1] <= 31 && +d[2] >= 1 && +d[2] <= 12 && +d[4] < 24) stamp = { date: `${d[3].length === 2 ? '20' + d[3] : d[3]}-${d[2]}-${d[1]}`, time: `${d[4].padStart(2, '0')}:${d[5]}` };
+      }
       if (total !== null) return;
       // «Скидка -10.00», «Скидка по карте 15,50» — запоминаем, чтобы сверить с суммой чека
-      if (/скидк|дисконт|экономия/i.test(line)) {
-        const m = line.match(new RegExp('(' + MONEY + ')\\s*\\S?$'));
+      if (isDiscount(line)) {
+        const m = line.match(MONEY_END);
         if (m && toNum(m[1]) < 1e5) discount += toNum(m[1]);
         pending = [];
         return;
       }
-      if (TOTAL.test(line)) {
-        const m = line.match(new RegExp('(' + MONEY + ')\\s*\\S?$'));
+      if (isTotal(line)) {
+        const m = line.match(MONEY_END);
         total = m ? toNum(m[1]) : 0;
         return;
       }
+      if (isCode(line) || isPay(line)) { pending = []; return; }
       const letters = (line.match(/[а-яёa-z]/gi) || []).length;
-      if (SKIP.test(line) && !parseCalc(line)) { pending = []; return; }
-
+      // строка «=359.59» под расчётом — сумма позиции. Знак «=» часто читается как «*», «+» или пропадает,
+      // поэтому узнаём её по смыслу: число без букв, близкое к «кол-во × цена» строкой выше
+      if (last && !last.simple && last.sum == null && idx - last.line <= 2 && letters <= 1 && !pending.length) {
+        const sm = line.match(/^(?:\S{1,3}\s+)?[^\dа-яёa-z\s]{0,2}\s*(\d{1,6}[.,]\d{2})\s*\S?$/i);
+        if (sm) {
+          const v = toNum(sm[1]), want = r2(last.qty * last.price);
+          // допуск 12%: одна неверно прочитанная цифра в количестве («1.305» вместо «1.385») не должна мешать узнать сумму
+          if (/[=≡]/.test(line) || Math.abs(v - want) <= Math.max(0.011, want * 0.12) || lev(v.toFixed(2), want.toFixed(2)) <= 2) { last.sum = v; last.line = idx; return; }
+        }
+      }
       const calc = parseCalc(line);
+      if (SKIP.test(line) && !calc) { pending = []; return; }
+
       if (calc) {
         // позиция была строкой выше с той же суммой — это её расшифровка «кол-во × цена»
-        if (last && last.line === idx - 1 && !pending.length && Math.abs(last.total - calc.total) < 0.01) {
-          last.qty = calc.qty; last.price = calc.price; last.line = idx;
+        if (last && last.line === idx - 1 && !pending.length && last.simple && Math.abs(last.total - r2(calc.qty * calc.price)) < 0.011) {
+          Object.assign(last, { qty: calc.qty, price: calc.price, qs: calc.qs, ps: calc.ps, line: idx });
           return;
         }
-        const name = cleanName([...pending.slice(-2), calc.rest].filter(Boolean).join(' '));
-        last = { name, qty: calc.qty, price: calc.price, total: calc.total, line: idx };
+        last = { name: takeName(calc.rest), qty: calc.qty, price: calc.price, qs: calc.qs, ps: calc.ps, sum: calc.sum, line: idx };
         items.push(last);
         pending = [];
         return;
       }
-      const end = line.match(new RegExp('^(.*[а-яёa-z].*?)\\s+(' + MONEY + ')\\s*[=*\\S]?$', 'i'));
+      const end =line.match(new RegExp('^(.*[а-яёa-z].*?)\\s+(' + MONEY + ')\\s*[=*\\S]?$', 'i'));
       if (end && letters >= 2) {
         let name = end[1], qty = 1, price = null;
         // «ХЛЕБ 1 54.99 54.99» / «ХЛЕБ 2 109.98» — числа перед суммой: кол-во и цена
@@ -387,30 +527,134 @@
           name = name.slice(0, tail.index);
         }
         const tot = toNum(end[2]);
-        if (!price || Math.abs(price * qty - tot) > Math.max(1, tot * 0.05)) price = Math.round((tot / (qty || 1)) * 100) / 100;
-        last = { name: cleanName([...pending.slice(-1), name].join(' ')), qty, price, total: tot, line: idx };
+        if (!price || Math.abs(price * qty - tot) > Math.max(1, tot * 0.05)) price = r2(tot / (qty || 1));
+        last = { name: takeName(name), qty, price, total: tot, simple: true, line: idx };
         items.push(last);
         pending = [];
         return;
       }
-      if (letters >= 3) { pending.push(line); if (pending.length > 3) pending.shift(); }
+      if (letters >= 3) { pending.push({ t: line, idx }); if (pending.length > 3) pending.shift(); }
     });
+    items.forEach((i) => { if (!i.simple) repair(i); });
+    // В чеке, где у позиций есть строка «кол-во × цена», одиночные строки «слово … сумма» — это не товары,
+    // а оплата («Сумма (руб)», «Безналичными»): убираем их, если без них чек сходится или они равны итогу.
+    let list = items.filter((i) => i.total > 0);
+    const full = list.filter((i) => !i.simple);
+    if (full.length >= 2 && full.length < list.length) {
+      const fs = full.reduce((s, i) => s + i.total, 0);
+      const fits = total && (Math.abs(fs - total) <= 0.05 || Math.abs(fs - discount - total) <= 0.05);
+      list = fits ? full : list.filter((i) => !i.simple || !(total ? Math.abs(i.total - total) <= 0.05 : i.total >= fs - 0.05));
+    }
+    // Итог чека не сошёлся — пробуем у одной из спорных позиций другой вариант исправления
+    const off = () => r2(list.reduce((s, i) => s + i.total, 0) - total);
+    if (total && Math.abs(off()) > 0.05 && Math.abs(off() - discount) > 0.05) {
+      search: for (const it of list) {
+        for (const c of it.alts || []) {
+          if (Math.abs(c.total - it.total) > 0.005 && (Math.abs(off() - it.total + c.total) <= 0.05 || Math.abs(off() - it.total + c.total - discount) <= 0.05)) { applyFix(it, c); break search; }
+        }
+      }
+    }
     return {
-      items: items.filter((i) => i.total > 0).map((i) => ({
-        name: i.name, total: i.total, price: i.price,
-        qty: String(Math.round(i.qty * 1000) / 1000).replace('.', ','),
-        unit: i.qty % 1 ? 'кг' : 'шт',
-      })),
+      items: list.map((i) => {
+        const u = splitUnit(i.name);
+        return {
+          name: u.name, total: i.total, price: i.price,
+          qty: String(Math.round(i.qty * 1000) / 1000).replace('.', ','),
+          unit: i.qty % 1 ? (u.unit === 'л' ? 'л' : 'кг') : (u.unit === 'л' ? 'л' : 'шт'),
+          fixed: i.fixed || '', doubt: !!i.doubt,
+        };
+      }),
       total: total || null,
-      discount: Math.round(discount * 100) / 100,
+      discount: r2(discount),
+      stamp,
     };
   }
 
   // ---------- Всё вместе ----------
-  // насколько распознанные позиции сходятся с суммой из QR (0 — идеально)
-  function mismatch(parsed, qr) {
-    const sum = parsed.items.reduce((s, i) => s + i.total, 0) - (parsed.discount || 0);
-    return qr ? Math.abs(sum - qr.sum) : Infinity;
+  // насколько распознанные позиции сходятся с суммой чека (0 — идеально); скидки могут быть уже учтены в ценах
+  function mismatch(parsed, target) {
+    if (!target) return Infinity;
+    const sum = parsed.items.reduce((s, i) => s + i.total, 0);
+    return Math.min(Math.abs(sum - target), Math.abs(sum - (parsed.discount || 0) - target));
+  }
+  // несколько фото одного длинного чека: строки второго фото, которые уже были в конце первого, не повторяем
+  function mergePages(pages) {
+    const key = (s) => skel(s) + s.replace(/\D/g, '');
+    const same = (a, b) => { const x = key(a), y = key(b); return lev(x, y) <= Math.max(1, Math.round(Math.max(x.length, y.length) * 0.25)); };
+    let out = [];
+    for (const lines of pages) {
+      // ищем, на сколько строк начало нового фото перекрывает конец уже прочитанного (крайние строки могут быть обрезаны)
+      let cut = 0, best = 0;
+      for (let k = Math.min(60, lines.length, out.length); k >= 3; k--) {
+        let ok = 0;
+        for (let i = 0; i < k; i++) if (same(out[out.length - k + i], lines[i])) ok++;
+        if (ok >= 3 && ok >= k * 0.7 && ok > best) { best = ok; cut = k; }
+      }
+      out = out.concat(lines.slice(cut));
+    }
+    return out;
+  }
+
+  // Новый способ: нейросеть PP-OCR
+  async function scanNN(imgs, onProgress) {
+    const say = (stage, p) => onProgress && onProgress({ stage, p });
+    await window.OCR.load((p) => say('load', p));
+    const pages = [], preps = [];
+    let conf = 0, textH = Infinity;
+    for (const [n, img] of imgs.entries()) {
+      say('prep', 0);
+      const prep = prepareNN(img);
+      preps.push(prep);
+      const progress = (p) => say('ocr', (n + p) / imgs.length);
+      // сначала только ищем текст и смотрим высоту строк: сеть лучше всего читает строки высотой ~36 px,
+      // поэтому мелко снятый чек увеличиваем, а крупный уменьшаем
+      let canvas = prep.canvas, scale = prep.scale, found = await window.OCR.find(canvas);
+      // наклон: сеть сама показывает, под каким углом идут строки, — выравниваем точно
+      if (Math.abs(found.skew) >= 0.4 && Math.abs(found.skew) <= 40) {
+        prep.src = rotate(prep.src, -found.skew, '#bbb');
+        prep.angle = found.skew;
+        scale = fitScale(prep.src, scale);
+        canvas = scaleCanvas(prep.src, scale);
+        found = await window.OCR.find(canvas);
+      }
+      if (found.medH && (found.medH < 31 || found.medH > 44)) {
+        const k = fitScale(prep.src, (scale * 37) / found.medH);
+        if (Math.abs(k / scale - 1) > 0.1) { scale = k; canvas = scaleCanvas(prep.src, k); found = null; }
+      }
+      const r = await window.OCR.read(canvas, progress, found);
+      pages.push(r.lines.map((L) => L.parts.map((b) => b.text).join(' ')));
+      conf += r.conf;
+      if (r.medH) textH = Math.min(textH, r.medH / 1.6 / scale);
+    }
+    const text = mergePages(pages).join('\n');
+    return { text, parsed: parseText(text), conf: (conf / Math.max(1, imgs.length)) * 100, engine: 'nn', preps, textH: isFinite(textH) ? Math.round(textH) : 0 };
+  }
+
+  // Прежний способ (Tesseract) — запасной, если нейросеть не загрузилась
+  async function scanTess(imgs, qr, onProgress) {
+    const prepared = imgs.map(prepareReceipt);
+    const worker = await makeWorker(onProgress, 'ocr');
+    try {
+      // попытка 1: контрастный ч/б, строки одним блоком
+      const r1 = await recognizeAll(worker, prepared.map((p) => p.bin), '6');
+      let best = { ...r1, parsed: parseText(r1.text) };
+      const target = (b) => (qr ? qr.sum : b.parsed.total);
+      const okEnough = (b) => target(b) && mismatch(b.parsed, target(b)) <= Math.max(1, target(b) * 0.01);
+      // попытка 2 — только если первая не сошлась: мягкий серый, колонки переменной ширины
+      if (!okEnough(best)) {
+        worker.state.stage = 'ocr2';
+        const r2nd = await recognizeAll(worker, prepared.map((p) => p.gray), '4');
+        const alt = { ...r2nd, parsed: parseText(r2nd.text) };
+        const mb = mismatch(best.parsed, target(best)), ma = mismatch(alt.parsed, target(alt));
+        const better = isFinite(mb) || isFinite(ma)
+          ? ma < mb - 0.01 || (Math.abs(ma - mb) < 0.01 && alt.parsed.items.length > best.parsed.items.length)
+          : alt.parsed.items.length * (alt.conf + 1) > best.parsed.items.length * (best.conf + 1);
+        if (better) best = alt;
+      }
+      return { ...best, engine: 'tess', preps: prepared.map((p) => ({ src: p.base })), textH: 0 };
+    } finally {
+      worker.terminate();
+    }
   }
 
   async function scan(files, onProgress) {
@@ -420,34 +664,23 @@
     let qr = null;
     for (const img of imgs) { qr = await findQR(img).catch(() => null); if (qr) break; }
     onProgress && onProgress({ stage: 'prep', p: 0 });
-    const prepared = imgs.map(prepareReceipt);
-    // QR не нашёлся на исходном фото — пробуем на обрезанном и выровненном
-    if (!qr) for (const p of prepared) { qr = await findQR(p.base).catch(() => null); if (qr) break; }
 
-    const worker = await makeWorker(onProgress, 'ocr');
-    try {
-      // попытка 1: контрастный ч/б, строки одним блоком
-      const r1 = await recognizeAll(worker, prepared.map((p) => p.bin), '6');
-      let best = { ...r1, parsed: parseText(r1.text), pass: 1 };
-      const okEnough = (b) => qr && mismatch(b.parsed, qr) <= Math.max(1, qr.sum * 0.01);
-      // попытка 2 — только если первая не сошлась: мягкий серый, колонки переменной ширины
-      if (!okEnough(best)) {
-        worker.state.stage = 'ocr2';
-        const r2 = await recognizeAll(worker, prepared.map((p) => p.gray), '4');
-        const alt = { ...r2, parsed: parseText(r2.text), pass: 2 };
-        const better = qr
-          ? mismatch(alt.parsed, qr) < mismatch(best.parsed, qr) - 0.01 ||
-            (Math.abs(mismatch(alt.parsed, qr) - mismatch(best.parsed, qr)) < 0.01 && alt.parsed.items.length > best.parsed.items.length)
-          : alt.parsed.items.length * (alt.conf + 1) > best.parsed.items.length * (best.conf + 1);
-        if (better) best = alt;
-      }
-      return {
-        qr, text: best.text, items: best.parsed.items, ocrTotal: best.parsed.total, discount: best.parsed.discount,
-        info: { pass: best.pass, conf: Math.round(best.conf), cropped: prepared.some((p) => p.crop), angle: prepared[0] ? prepared[0].angle : 0 },
-      };
-    } finally {
-      worker.terminate();
+    let res = null;
+    if (window.OCR) {
+      try { res = await scanNN(imgs, onProgress); } catch (e) { console.warn('Нейросеть не загрузилась, читаю чек прежним способом', e); }
     }
+    if (!res) res = await scanTess(imgs, qr, onProgress);
+    // QR не нашёлся на исходном фото — пробуем на обрезанном и выровненном
+    if (!qr) for (const p of res.preps) { qr = await findQR(p.src).catch(() => null); if (qr) break; }
+
+    const parsed = res.parsed, target = qr ? qr.sum : parsed.total;
+    const sum = parsed.items.reduce((s, i) => s + i.total, 0);
+    // скидки, напечатанные отдельными строками, часто уже учтены в ценах — тогда вычитать их второй раз нельзя
+    const discount = target && Math.abs(sum - target) <= 0.05 ? 0 : parsed.discount;
+    return {
+      qr, text: res.text, items: parsed.items, ocrTotal: parsed.total, discount, stamp: parsed.stamp,
+      info: { engine: res.engine, conf: Math.round(res.conf), textH: res.textH, fixed: parsed.items.filter((i) => i.fixed).length },
+    };
   }
 
   // Распознать текст с любых картинок (фото страницы рецепта, скриншот и т.п.)
@@ -460,5 +693,6 @@
     } finally { worker.terminate(); }
   }
 
-  window.Receipt = { scan, parseQR, parseText, prepForOCR, prepareReceipt, skewAngle, paperBox, findQR, ocrText, loadScript, loadImage, binarize, grayVariant, toCanvas, rotate };
+  window.Receipt = { scan, lev, parseQR, parseText, prepForOCR, prepareReceipt, prepareNN, textBox, skewAngle, paperBox, findQR, ocrText, loadScript, loadImage, binarize, grayVariant, toCanvas, rotate };
 })();
+

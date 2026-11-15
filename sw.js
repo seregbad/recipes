@@ -1,13 +1,16 @@
 // Сервис-воркер: приложение открывается и без интернета.
 // Свои файлы — «сначала сеть, потом кэш» (обновления видны сразу, офлайн берётся сохранённая копия).
 // После изменения файлов можно поднять версию, чтобы старый кэш удалился.
-const CACHE = 'kuhnya-v10';
+const CACHE = 'kuhnya-v11';
 const SHELL = [
   './', './index.html', './desktop.html', './manifest.webmanifest', './manifest-desktop.webmanifest', './css/styles.css', './css/desktop.css',
-  './js/config.js', './js/ingredients.js', './js/seed.js', './js/utils.js', './js/store.js', './js/receipt.js', './js/recipe-extract.js', './js/recipe-import.js', './js/measures.js', './js/app.js', './js/desktop.js',
+  './js/config.js', './js/ingredients.js', './js/seed.js', './js/utils.js', './js/store.js', './js/ocr.js', './js/receipt.js', './js/recipe-extract.js', './js/recipe-import.js', './js/measures.js', './js/app.js', './js/desktop.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',
 ];
 const CDN = 'https://cdn.jsdelivr.net/';
+// тяжёлые библиотеки и модели распознавания: версии зафиксированы, храним отдельно и не удаляем при обновлении приложения
+const LIBS = 'kuhnya-libs-v1';
+const KEEP = [CACHE, LIBS, 'kuhnya-ocr-v1'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -15,7 +18,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => !KEEP.includes(k)).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -24,12 +27,12 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+  if (url.searchParams.has('nocache')) return; // проверка связи: только настоящая сеть
 
-  // библиотека Supabase с CDN — версия зафиксирована, берём из кэша
-  if (req.url.startsWith(CDN)) {
+  // библиотеки с CDN и папка ocr/ — берём из кэша, в сеть идём только в первый раз
+  if (req.url.startsWith(CDN) || (url.origin === self.location.origin && url.pathname.includes('/ocr/'))) {
     e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(req, copy));
+      if (res.ok) { const copy = res.clone(); caches.open(LIBS).then((c) => c.put(req, copy)); }
       return res;
     })));
     return;

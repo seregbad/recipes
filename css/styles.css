@@ -414,6 +414,16 @@ body.cooking { padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
 .serv .icon-btn { width: 38px; height: 38px; }
 .serv .icon-btn:disabled { opacity: .35; }
 .cook .serv { margin-bottom: 0; }
+/* проверка связи */
+.diag { list-style: none; padding: 0; margin: 0 0 10px; }
+.diag li { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.diag li:last-child { border-bottom: 0; }
+.diag .dot { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+.diag .dot .ic { width: 14px; height: 14px; stroke-width: 3; }
+.diag .ok .dot { background: var(--ok-soft); color: var(--ok); }
+.diag .slow .dot { background: var(--warn-soft); color: var(--warn); }
+.diag .bad .dot { background: var(--bad-soft); color: var(--bad); }
+.diag small { color: var(--muted); }
 /* пересчёт количеств и граммы */
 .serv-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 6px; }
 .serv-row .serv { margin: 0; }

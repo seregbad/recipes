@@ -176,7 +176,9 @@
 
     const st = Store.status();
     const modeEl = $('#mode');
-    const modeText = st.mode === 'local' ? 'локально' : st.pending ? `не отправлено: ${st.pending} ↻` : !st.online ? 'нет сети ↻' : '';
+    // изменения уходят в базу в фоне; значок появляется, только когда что-то не так
+    const netText = { offline: 'нет сети', down: 'база не отвечает', auth: 'нет доступа к базе' }[st.net] || '';
+    const modeText = st.mode === 'local' ? 'локально' : netText ? `${netText}${st.pending ? ` · не отправлено: ${st.pending}` : ''} ↻` : '';
     if (!modeEl.classList.contains('busy')) modeEl.textContent = modeText;
     modeEl.hidden = !modeText || needLogin;
     modeEl.classList.toggle('local', st.mode === 'local');
@@ -929,6 +931,80 @@
     .replace(/(?:^|\s)с[0о1-3](?![а-яё])/g, ' ')
     .replace(/[^а-яёa-z0-9\s-]/g, ' ').replace(/\s+/g, ' ').trim();
 
+  // с чем сверять позиции: сумма из QR-кода, а если он не прочитался — «Итог», напечатанный на чеке
+  const rcTarget = (d) => (d.qr ? d.qr.sum : d.ocrTotal || 0);
+  // Память названий: как вы назвали строку чека в прошлый раз («Свинина охл лопатка н.к» → «свинина»),
+  // так она и подставится в следующий. Ищем с допуском на ошибки распознавания.
+  const RC_NAMES_ID = 'settings-receipt-names';
+  const rcKey = (s) => U.norm(s).replace(/[^а-яa-z0-9]/g, '');
+  function rcLookup(orig) {
+    const k = rcKey(orig), map = (Store.get('settings', RC_NAMES_ID) || {}).map || {};
+    if (k.length < 4) return null;
+    if (map[k]) return map[k];
+    let best = null, bd = Infinity;
+    for (const key of Object.keys(map)) {
+      if (Math.abs(key.length - k.length) > 4) continue;
+      const d = Receipt.lev(key, k);
+      if (d < bd) { bd = d; best = key; }
+    }
+    return best && bd <= Math.max(2, Math.round(k.length * 0.2)) ? map[best] : null;
+  }
+  async function rcLearn(rows) {
+    const cur = Store.get('settings', RC_NAMES_ID) || { id: RC_NAMES_ID, map: {} };
+    const map = { ...cur.map };
+    let changed = false;
+    for (const r of rows) {
+      const k = rcKey(r.orig);
+      if (k.length < 4 || !r.name || (map[k] && map[k].name === r.name)) continue;
+      map[k] = { name: r.name };
+      changed = true;
+    }
+    const keys = Object.keys(map);
+    if (keys.length > 1500) keys.slice(0, keys.length - 1500).forEach((k) => delete map[k]);
+    if (changed) await Store.save('settings', { ...cur, id: RC_NAMES_ID, map });
+  }
+  // Словарь «правильных» слов (справочник, покупки, запасы): по нему чинятся опечатки распознавания («нолоко» → «молоко»)
+  function rcVocab() {
+    const set = new Set();
+    const add = (s) => (U.norm(s).match(/[а-я]{4,}/g) || []).forEach((w) => set.add(w));
+    catalog().forEach((c) => add(c.name));
+    Store.all('shopping').forEach((s) => add(s.name));
+    Store.all('pantry').forEach((s) => add(s.name));
+    Object.values((Store.get('settings', RC_NAMES_ID) || {}).map || {}).forEach((v) => add(v.name));
+    ['фрукт', 'овощ', 'паста', 'спагетти', 'рожки', 'сырок', 'салфетки', 'пакет', 'напиток', 'конфеты', 'печенье', 'шоколад', 'йогурт', 'творожок', 'батон', 'охлажденная', 'пастеризованное'].forEach((w) => set.add(w));
+    return { set, list: [...set] };
+  }
+  function rcFixWords(name, vocab) {
+    // короткие слова (4 буквы) чиним только в начале названия: там стоит сам продукт («клеб» → «хлеб»)
+    return String(name).trim().replace(/[а-яё]{4,}/gi, (w, at) => {
+      const lw = w.toLowerCase().replace(/ё/g, 'е');
+      if (vocab.set.has(lw) || (lw.length === 4 && at > 0)) return w;
+      const max = lw.length >= 8 ? 2 : 1;
+      let best = '', bd = max + 1, tie = false;
+      for (const v of vocab.list) {
+        if (Math.abs(v.length - lw.length) > max) continue;
+        const d = Receipt.lev(v, lw);
+        if (d < bd) { bd = d; best = v; tie = false; } else if (d === bd && v !== best) tie = true;
+      }
+      return best && !tie ? best : w;
+    });
+  }
+
+  // Строка чека → продукт. Главное слово в чеке стоит первым («Молоко Пискар. 2.5%», «Сырок глаз. какао»),
+  // поэтому продукт из справочника ищем по первым словам, а не по всей строке (иначе сырок с какао стал бы «какао»).
+  const RC_GENERIC = new Set(['фрукт', 'фрукты', 'овощ', 'овощи', 'продукт', 'напиток', 'изделие', 'набор', 'бзмж', 'охл', 'зам']);
+  function rcProduct(name, cat, vocab) {
+    const words = productName(rcFixWords(name, vocab)).split(' ').filter((w) => (w.length >= 3 || /^[a-z]{2,}$/.test(w)) && !RC_GENERIC.has(w));
+    const head = words.slice(0, 2);
+    for (const probe of [head.join(' '), head[0], head[1]]) {
+      if (!probe) continue;
+      const key = U.ingKey(probe, cat);
+      // «салфетки» не должны стать «салом», а «сырок» — «сыром»: основы слов должны почти совпадать по длине
+      if (cat.some((c) => c.name === key) && Math.abs(U.stem(U.norm(key).split(' ')[0]).length - U.stem(probe.split(' ')[0]).length) <= 1) return key;
+    }
+    return words.slice(0, 3).join(' ') || productName(name);
+  }
+
   async function openReceiptScan(files) {
     const id = ++receiptScanId;
     const setStage = (text, p) => {
@@ -941,32 +1017,33 @@
       <div class="form-head"><h2>Читаю чек…</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
       <p id="rc-stage">Открываю фото…</p>
       <div class="progress"><i id="rc-bar"></i></div>
-      <p class="muted small">Всё распознаётся прямо в телефоне. В первый раз загрузится словарь (около 4 МБ), дальше быстрее и без интернета. Обычно 5–20 секунд.</p>
+      <p class="muted small">Всё распознаётся прямо на устройстве, фото никуда не отправляется. В первый раз загрузится модель распознавания (около 20 МБ, лучше по Wi-Fi), дальше она берётся из памяти и работает без интернета. Обычно 10–30 секунд.</p>
     </div>`);
     try {
       const res = await Receipt.scan(files, ({ stage, p }) => {
         if (stage === 'qr') setStage('Ищу QR-код…', 0.05);
         else if (stage === 'prep') setStage('Готовлю фото…', 0.1);
-        else if (stage === 'load') setStage('Загружаю распознавание…', 0.1 + p * 0.2);
-        else if (stage === 'ocr') setStage(`Распознаю текст… ${Math.round(p * 100)}%`, 0.3 + p * 0.5);
+        else if (stage === 'load') setStage(`Загружаю распознавание… ${Math.round(p * 100)}%`, 0.1 + p * 0.2);
+        else if (stage === 'ocr') setStage(`Читаю чек… ${Math.round(p * 100)}%`, 0.3 + p * 0.7);
         else if (stage === 'ocr2') setStage(`Сумма не сошлась, перепроверяю другим способом… ${Math.round(p * 100)}%`, 0.8 + p * 0.2);
       });
       if (id !== receiptScanId || !$('#modal').open) return; // окно закрыли — результат не нужен
-      const cat = catalog();
+      const cat = catalog(), words = rcVocab();
       receiptDraft = {
-        qr: res.qr, text: res.text, ocrTotal: res.ocrTotal,
+        qr: res.qr, text: res.text, ocrTotal: res.ocrTotal, stamp: res.stamp, info: res.info || {},
+        date: !res.qr && res.stamp && res.stamp.date <= U.today() ? res.stamp.date : undefined,
         items: res.items.map((it) => {
-          const key = U.ingKey(it.name, cat);
-          const known = cat.some((c) => c.name === key);
-          return { name: known ? key : productName(it.name), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true };
+          // 1) так уже называли эту строку чека раньше; 2) продукт из справочника; 3) название с чека без фасовки
+          const learned = rcLookup(it.name);
+          return { name: learned ? learned.name : rcProduct(it.name, cat, words), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true, fixed: it.fixed, doubt: it.doubt };
         }),
       };
-      // скидка из чека сходится с QR — сразу разносим её по позициям
-      const sum = receiptDraft.items.reduce((s, i) => s + i.total, 0);
-      if (res.discount && res.qr && Math.abs(sum - res.discount - res.qr.sum) < 1 && sum > 0) {
-        const k = res.qr.sum / sum;
+      // скидка из чека сходится с итогом — сразу разносим её по позициям
+      const sum = receiptDraft.items.reduce((s, i) => s + i.total, 0), target = rcTarget(receiptDraft);
+      if (res.discount && target && Math.abs(sum - res.discount - target) < 1 && sum > 0) {
+        const k = target / sum;
         receiptDraft.items.forEach((i) => { i.total = Math.round(i.total * k * 100) / 100; });
-        const rest = Math.round((res.qr.sum - receiptDraft.items.reduce((s, i) => s + i.total, 0)) * 100) / 100;
+        const rest = Math.round((target - receiptDraft.items.reduce((s, i) => s + i.total, 0)) * 100) / 100;
         if (rest) { const big = receiptDraft.items.reduce((a, b) => (b.total > a.total ? b : a)); big.total = Math.round((big.total + rest) * 100) / 100; }
         receiptDraft.discountApplied = res.discount;
       }
@@ -985,8 +1062,12 @@
       <div class="form-head"><h2>Проверьте чек</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
       <p class="small ${qr ? '' : 'warn-text'}">${qr
         ? `${icon('check', 'tiny')} QR-код: ${esc(U.fmtDate(qr.date))}, ${esc(qr.time)} · <b>${money(qr.sum)} ₽</b>${qr.refund ? ' · <b>возврат</b>' : ''}`
-        : 'QR-код не нашёлся: проверьте дату. Сумму считаю по позициям.'}
-        ${d.discountApplied ? `<br>${icon('check', 'tiny')} Скидка ${money(d.discountApplied)} ₽ из чека уже разнесена по позициям.` : ''}</p>
+        : d.stamp && d.ocrTotal
+          ? `QR-код не прочитался, дата и итог взяты из текста чека: ${esc(U.fmtDate(d.stamp.date))}, ${esc(d.stamp.time)} · <b>${money(d.ocrTotal)} ₽</b>. Проверьте их.`
+          : 'QR-код не нашёлся: проверьте дату. Сумму считаю по позициям.'}
+        ${d.discountApplied ? `<br>${icon('check', 'tiny')} Скидка ${money(d.discountApplied)} ₽ из чека уже разнесена по позициям.` : ''}
+        ${d.items.some((i) => i.fixed) ? `<br>${icon('check', 'tiny')} В ${d.items.filter((i) => i.fixed).length} поз. цифра прочиталась неточно — исправлена по проверке «количество × цена = сумма».` : ''}</p>
+      ${d.info && d.info.textH && d.info.textH < 13 ? `<p class="small warn-text">Чек снят мелко (буквы около ${d.info.textH} px), названия могли прочитаться с ошибками. Длинный чек лучше снимать двумя-тремя фото по частям с небольшим перекрытием и выбирать их все сразу — приложение склеит.</p>` : ''}
       <div class="grid2">
         <label>Дата покупки<input type="date" name="date" value="${esc(date)}" max="${U.today()}" required></label>
         <label>Магазин<input name="shop" list="dl-shops" value="${esc(d.shop != null ? d.shop : lastShop)}" placeholder="необязательно"></label>
@@ -995,7 +1076,7 @@
       ${d.items.length ? `<div class="rc-head"><span></span><span>Продукт</span><span>Кол-во</span><span>₽</span><span></span></div>
       <div class="rc-rows">${d.items.map((it, i) => `<div class="rc-row ${it.on ? '' : 'off'}" data-i="${i}">
         <input type="checkbox" name="on" ${it.on ? 'checked' : ''} aria-label="Учитывать">
-        <div class="rc-name"><input name="n" data-suggest value="${esc(it.name)}" aria-label="Продукт">${it.orig && U.norm(it.orig) !== U.norm(it.name) ? `<small>${esc(it.orig)}</small>` : ''}</div>
+        <div class="rc-name"><input name="n" data-suggest value="${esc(it.name)}" aria-label="Продукт">${it.orig && U.norm(it.orig) !== U.norm(it.name) ? `<small>${esc(it.orig)}</small>` : ''}${it.doubt ? '<small class="warn-text">цифры в строке не сходятся — проверьте сумму</small>' : ''}</div>
         <div class="rc-qty"><input name="q" inputmode="decimal" value="${esc(it.qty)}" aria-label="Количество">${unitSelect(it.unit)}</div>
         <input name="p" class="rc-price" inputmode="decimal" value="${esc(money(it.total))}" aria-label="Сумма, ₽">
         <button type="button" class="icon-btn" data-act="rc-del" data-i="${i}" aria-label="Удалить строку">${icon('trash')}</button>
@@ -1007,7 +1088,7 @@
       <label class="check"><input type="checkbox" name="topantry" checked> Добавить в «Есть дома»</label>
       ${d.text ? `<details class="rc-raw"><summary>Распознанный текст</summary><textarea readonly rows="8">${esc(d.text)}</textarea></details>` : ''}
       <div class="form-actions wrap">
-        ${qr || !d.items.length ? `<button type="button" class="btn" data-act="rc-lump">Одной суммой</button>` : ''}
+        ${rcTarget(d) || !d.items.length ? `<button type="button" class="btn" data-act="rc-lump">Одной суммой</button>` : ''}
         <button type="button" class="btn" data-act="close">Отмена</button>
         <button class="btn primary" ${d.items.length ? '' : 'disabled'}>Сохранить</button>
       </div>
@@ -1016,15 +1097,16 @@
 
   function receiptSumHtml(d) {
     const sum = d.items.filter((i) => i.on).reduce((s, i) => s + num2(i.total), 0);
-    if (!d.qr) return `Итого по позициям: <b>${money(sum)} ₽</b>${d.ocrTotal ? ` · на чеке «итог» ${money(d.ocrTotal)} ₽` : ''}`;
-    const diff = Math.round((sum - d.qr.sum) * 100) / 100;
+    const target = rcTarget(d);
+    if (!target) return `Итого по позициям: <b>${money(sum)} ₽</b>`;
+    const diff = Math.round((sum - target) * 100) / 100;
     const ok = Math.abs(diff) < 0.5;
     // позиции дороже чека — это скидки, их можно разнести по позициям;
     // дешевле — какая-то строка не распозналась, её надо дописать, а не раздувать цены
     const hint = ok ? '' : diff > 0
-      ? (diff <= d.qr.sum * 0.3 ? `<button type="button" class="linklike" data-act="rc-fit">Учесть скидку ${money(diff)} ₽: разнести по позициям</button>` : '<small>Похоже, лишняя строка: снимите галочку у неё.</small>')
+      ? (diff <= target * 0.3 ? `<button type="button" class="linklike" data-act="rc-fit">Учесть скидку ${money(diff)} ₽: разнести по позициям</button>` : '<small>Похоже, лишняя строка: снимите галочку у неё.</small>')
       : `<small>Не хватает позиций на ${money(-diff)} ₽: добавьте строку или посмотрите «Распознанный текст».</small>`;
-    return `<span class="${ok ? 'ok-text' : 'warn-text'}">Позиции: <b>${money(sum)} ₽</b> · по чеку: <b>${money(d.qr.sum)} ₽</b>
+    return `<span class="${ok ? 'ok-text' : 'warn-text'}">Позиции: <b>${money(sum)} ₽</b> · ${d.qr ? 'по чеку' : '«итог» на чеке'}: <b>${money(target)} ₽</b>
       ${ok ? ' · сходится ✓' : ` · ${diff > 0 ? 'больше' : 'меньше'} на ${money(Math.abs(diff))} ₽`}</span>${hint}`;
   }
 
@@ -1047,13 +1129,14 @@
   async function saveReceipt(f, lump) {
     const d = readReceiptForm(f);
     const date = d.date || U.today();
-    const key = d.qr ? d.qr.key : '';
+    // чек узнаём по QR-коду, а без него — по дате, времени и итогу из текста
+    const key = d.qr ? d.qr.key : d.stamp && d.ocrTotal ? `t-${d.stamp.date}-${d.stamp.time}-${money(d.ocrTotal)}` : '';
     if (key && Store.all('shopping').some((s) => s.receipt === key)) {
       if (!(await confirmBox('Этот чек уже добавляли. Добавить ещё раз?', 'Добавить'))) return;
     }
     const base = { status: 'bought', bought_on: date, shop: d.shop || '', receipt: key, created_on: U.today() };
     if (lump) {
-      const sum = d.qr ? d.qr.sum : d.items.filter((i) => i.on).reduce((s, i) => s + num2(i.total), 0);
+      const sum = rcTarget(d) || d.items.filter((i) => i.on).reduce((s, i) => s + num2(i.total), 0);
       if (!sum) { toast('Нет суммы: впишите позиции или переснимите чек с QR-кодом'); return; }
       await Store.save('shopping', { ...base, name: d.shop ? `Чек: ${d.shop}` : 'Чек', qty: '', unit: '', price: money(sum), lump: true });
       closeModal();
@@ -1072,6 +1155,7 @@
     }
     await Store.saveMany('shopping', out);
     if (toPantry) for (const r of rows) await addToPantry(r.name, r.unit === 'шт' && !r.qty ? '1' : r.qty, r.unit);
+    await rcLearn(rows.filter((r) => r.orig)); // запоминаем, как вы назвали строки чека
     closeModal();
     receiptDraft = null;
     const sum = rows.reduce((s, r) => s + num2(r.total), 0);
@@ -1605,9 +1689,10 @@
         <h2>Где хранятся данные</h2>
         ${cloud
           ? `<p>${icon('check')} Общая база Supabase: изменения сразу видны вам обоим.<br><span class="muted small">Вы вошли как ${esc(Store.userEmail())}</span></p>
-             <p class="small">${Store.status().pending ? `<b>Не отправлено: ${Store.status().pending}</b>` : 'Все изменения отправлены'}${Store.lastSync ? ` · данные обновлены ${esc(U.ago(U.toISODate(new Date(Store.lastSync))))} в ${new Date(Store.lastSync).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}` : ''}${!Store.status().online ? ' · <b>нет сети</b>' : ''}</p>
+             <p class="small">${Store.status().pending ? `<b>Не отправлено: ${Store.status().pending}</b>` : 'Все изменения отправлены'}${Store.lastSync ? ` · данные обновлены ${esc(U.ago(U.toISODate(new Date(Store.lastSync))))} в ${new Date(Store.lastSync).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}` : ''}${{ offline: ' · <b>нет сети</b>', down: ' · <b>база не отвечает</b>', auth: ' · <b>нет доступа к базе</b>' }[Store.status().net] || ''}${Store.realtime && Store.realtime !== 'SUBSCRIBED' ? ' · живое обновление не подключено, данные перечитываются раз в минуту' : ''}</p>
              <div class="row wrap">
                <button class="btn primary" data-act="sync">${icon('repeat')}<span>Синхронизировать сейчас</span></button>
+               <button class="btn" data-act="diag">${icon('search')}<span>Проверить связь</span></button>
                <button class="btn" data-act="logout">Выйти</button>
              </div>`
           : `<p><b>Локально, только в этом браузере.</b> Чтобы пользоваться вдвоём с телефонов, подключите Supabase по инструкции (файл <code>ИНСТРУКЦИЯ.md</code>). Данные отсюда можно будет перенести: сохраните копию ниже и загрузите её после подключения.</p>`}
@@ -1645,6 +1730,18 @@
         ${cloud ? 'Ежедневные сообщения в Telegram настраиваются в GitHub (см. инструкцию).' : 'После подключения Supabase и GitHub будут приходить сообщения в Telegram.'}
         У каждой заготовки есть кнопка ${icon('cal', 'tiny')}: добавить напоминание в Google Календарь.</p>
       </section>`;
+  }
+
+  // вывод по результатам проверки связи — простыми словами
+  function diagVerdict(rows) {
+    const by = (s) => rows.find((r) => r.name.startsWith(s));
+    const site = by('Сайт'), small = by('База: короткий'), big = by('База: все'), cf = by('Cloudflare'), lib = by('Библиотеки');
+    if (site && !site.ok && (!small || !small.ok)) return '<b>Нет интернета.</b> Изменения сохраняются на устройстве и отправятся, когда сеть появится.';
+    if (small && !small.ok) return '<b>База недоступна с этого интернета.</b> Сайт открывается, а Supabase не отвечает: похоже на блокировку у оператора. Без VPN синхронизация работать не будет; изменения копятся на устройстве и уйдут, когда связь с базой появится. Решение — прокси для базы на российском хостинге (см. инструкцию, раздел «Если без VPN не синхронизируется»).';
+    if ((big && !big.ok) || (cf && !cf.ok)) return '<b>Оператор обрывает большие ответы от Cloudflare</b> (на нём работает Supabase): короткие запросы проходят, а загрузка данных — нет. Поэтому без VPN кажется, что синхронизации нет. Решение — прокси для базы на российском хостинге (см. инструкцию, раздел «Если без VPN не синхронизируется»).';
+    if (lib && !lib.ok) return '<b>База доступна</b>, но не загружаются библиотеки с jsDelivr (нужны для чеков и файлов). Синхронизации это не мешает.';
+    const slow = rows.some((r) => r.ok && r.ms > 6000);
+    return slow ? '<b>Связь есть, но медленная.</b> Синхронизация работает, просто дольше обычного.' : '<b>Всё доступно.</b> Синхронизация должна работать. Если сейчас включён VPN — повторите проверку без него.';
   }
 
   function viewLogin() {
@@ -1725,11 +1822,12 @@
       const d = readReceiptForm(f);
       const on = d.items.filter((i) => i.on && num2(i.total) > 0);
       const sum = on.reduce((s, i) => s + num2(i.total), 0);
-      if (!d.qr || !sum || sum <= d.qr.sum) return;
-      const k = d.qr.sum / sum;
+      const target = rcTarget(d);
+      if (!target || !sum || sum <= target) return;
+      const k = target / sum;
       on.forEach((i) => { i.total = Math.round(num2(i.total) * k * 100) / 100; });
       // копейки от округления — на самую дорогую позицию
-      const rest = Math.round((d.qr.sum - on.reduce((s, i) => s + i.total, 0)) * 100) / 100;
+      const rest = Math.round((target - on.reduce((s, i) => s + i.total, 0)) * 100) / 100;
       if (rest) { const big = on.reduce((a, b) => (b.total > a.total ? b : a)); big.total = Math.round((big.total + rest) * 100) / 100; }
       openModal(receiptForm(d));
       toast('Скидка распределена по позициям');
@@ -1953,6 +2051,19 @@
         toast(n ? `Отправлено изменений: ${n}. Данные обновлены` : 'Данные обновлены');
       } catch (e) { toast(e.message || String(e), 'err'); }
       finally { badge.classList.remove('busy'); el.disabled = false; refresh(); }
+    },
+    // что с этого устройства доступно прямо сейчас (чтобы понять, почему без VPN не синхронизируется)
+    diag: async () => {
+      const rowsHtml = (rows, done) => `<div class="form">
+        <div class="form-head"><h2>Проверка связи</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
+        <ul class="diag">${rows.map((r) => `<li class="${r.ok ? (r.ms > 6000 ? 'slow' : 'ok') : 'bad'}"><span class="dot">${icon(r.ok ? 'check' : 'x')}</span>
+          <span><b>${esc(r.name)}</b><br><small>${r.ok ? `${(r.ms / 1000).toFixed(1).replace('.', ',')} с${r.kb ? ` · ${String(r.kb).replace('.', ',')} КБ` : ''}${r.ms > 6000 ? ' · медленно' : ''}` : esc(r.note)}</small></span></li>`).join('')}</ul>
+        <p class="${done ? '' : 'muted'}">${done ? diagVerdict(rows) : 'Проверяю… это до минуты.'}</p>
+        ${done ? `<p class="muted small">Сделайте проверку без VPN и с VPN — по разнице видно, что режет оператор.</p>` : ''}
+      </div>`;
+      openModal(rowsHtml([], false));
+      const rows = await Store.diagnose((part) => { if ($('#modal').open && $('.diag')) openModal(rowsHtml(part, false)); });
+      if ($('#modal').open && $('.diag')) openModal(rowsHtml(rows, true));
     },
     'custom-del': async (el) => {
       const c = Store.get('custom_ingredients', el.dataset.id);
@@ -2408,6 +2519,16 @@
 
   // старт — когда загружены все скрипты страницы (версия для компьютера подключает свои страницы после app.js)
   const start = async () => {
+    // Адрес базы задан, а её библиотека не загрузилась (плохая связь при первом запуске). Работать «локально»
+    // в таком случае нельзя: записи остались бы только на этом устройстве и не попали бы в общую базу.
+    if (Store.libMissing) {
+      $('#view').innerHTML = `<div class="empty">${icon('alert', 'big')}<h3>Не удалось загрузить приложение целиком</h3>
+        <p>Не загрузилась часть, которая отвечает за общую базу. Проверьте интернет и попробуйте ещё раз.</p>
+        <button class="btn primary" onclick="location.reload()">Обновить страницу</button></div>`;
+      return;
+    }
+    Store.onProblem = (text) => toast(text, 'err');
+    Store.onSignedOut = () => { if (!needLogin) { needLogin = true; closeModal(); render(); toast('Нужно войти заново. Несохранённого нет: изменения на устройстве и отправятся после входа'); } };
     try {
       const res = await Store.init();
       needLogin = res.needLogin;
