@@ -134,12 +134,19 @@
   function openModal(html) {
     const d = $('#modal');
     d.innerHTML = `<div class="modal-inner">${html}</div>`;
+    delete d.dataset.dirty;
     if (!d.open) d.showModal();
     const first = d.querySelector('[autofocus]');
     if (first) first.focus();
     return d;
   }
-  function closeModal() { const d = $('#modal'); if (d.open) d.close(); }
+  function closeModal() {
+    const d = $('#modal');
+    if (!d.open) return;
+    const rc = rcBeforeClose();
+    d.close();
+    if (rc && route().name === 'shopping') refresh();
+  }
 
   function confirmBox(text, okLabel = 'Удалить') {
     return new Promise((resolve) => {
@@ -859,6 +866,7 @@
     return `
       <div class="page-head"><h1>Покупки</h1>
         <label class="btn">${icon('camera')}<span>Чек</span><input type="file" accept="image/*" multiple data-act-change="receipt" hidden></label></div>
+      ${rcDraftNote()}
       <div class="seg">
         <button class="${ui.shopTab === 'todo' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="todo">Купить · ${todo.length}</button>
         <button class="${ui.shopTab === 'history' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="history">История</button>
@@ -933,6 +941,27 @@
 
   // ---------- Чеки: фото → QR + распознавание → проверка → покупки ----------
   let receiptDraft = null, receiptScanId = 0;
+  // незаконченный чек переживает закрытие окна и перезапуск приложения (только на этом устройстве)
+  const RC_DRAFT_KEY = 'kuhnya-receipt-draft';
+  function rcKeepDraft() {
+    try { if (receiptDraft) localStorage.setItem(RC_DRAFT_KEY, JSON.stringify(receiptDraft)); else localStorage.removeItem(RC_DRAFT_KEY); } catch (e) { /* память недоступна — черновик живёт до перезапуска */ }
+  }
+  try { const s = localStorage.getItem(RC_DRAFT_KEY); if (s) receiptDraft = JSON.parse(s); } catch (e) { receiptDraft = null; }
+  // окно с чеком закрывается, а чек не сохранён — правки из формы остаются в черновике, к нему можно вернуться из «Покупок»
+  function rcBeforeClose() {
+    const f = $('#modal form.receipt');
+    if (!f || !receiptDraft) return false;
+    readReceiptForm(f); rcKeepDraft();
+    return true;
+  }
+  function rcDraftNote() {
+    const d = receiptDraft;
+    if (!d || !d.items || $('#modal').open) return '';
+    const on = d.items.filter((i) => i.on), sum = on.reduce((s, i) => s + num2(i.total), 0);
+    const when = d.date || (d.qr && d.qr.date) || (d.stamp && d.stamp.date);
+    return `<div class="card rc-draft"><div><b>Чек не сохранён</b><br><small class="muted">${when ? esc(U.fmtDate(when)) + ' · ' : ''}${on.length} поз. на ${money(sum)} ₽. Правки на месте.</small></div>
+      <div class="row-actions"><button type="button" class="btn primary small" data-act="rc-resume">Вернуться к чеку</button><button type="button" class="btn small" data-act="rc-drop">Отбросить</button></div></div>`;
+  }
   const num2 = (v) => { const n = parseFloat(String(v || '').replace(/\s/g, '').replace(',', '.')); return isFinite(n) ? n : 0; };
   const money = (n) => (Math.round(n * 100) / 100).toFixed(2).replace('.', ',');
 
@@ -1004,6 +1033,7 @@
     [/^(бедрышки|бедрышко|бедрышек|бедро|бедра)$/, 'бедра'],
     [/^(крыло|крылья|крылышки|крылышко|крылышек)$/, 'крылья'],
     [/^(яйцо|яйца|яиц)$/, 'яйца'],
+    [/^(коса|косичка|косички)$/, 'косичка'],
   ];
   const rcCanon = (w) => { const hit = RC_CANON.find(([re]) => re.test(w)); return hit ? hit[1] : w; };
   const rcStems = (s) => U.stems(U.norm(s).split(/[\s-]+/).map(rcCanon).join(' '));
@@ -1012,7 +1042,8 @@
   // основа из чека подходит к основе из справочника (как в общем сопоставлении продуктов)
   const rcFits = (a, b) => a === b || (b.length >= 3 && a.startsWith(b)) || (a.length >= 5 && b.startsWith(a) && a.length / b.length >= 0.7);
   // …и строгое совпадение для главного слова: «салфетки» не должны стать «салом», а «сырок» — «сыром»
-  const rcSame = (a, b) => (a.startsWith(b) || b.startsWith(a)) && Math.abs(a.length - b.length) <= 1;
+  // (длинные слова в чеке обрезают сильнее: «сервел» → «сервелат»)
+  const rcSame = (a, b) => (a.startsWith(b) || b.startsWith(a)) && Math.abs(a.length - b.length) <= (Math.min(a.length, b.length) >= 5 ? 2 : 1);
   // Строка чека → самый точный продукт справочника: «Свинина охл Лопатка н.к» → «свинина лопатка», «Шея свиная» → «свинина шея»,
   // «Филе цыплёнка-бройлера» → «куриное филе», «Сыр Гауда 48%» → «сыр гауда». Главное слово в чеке стоит первым или вторым,
   // поэтому продукт обязан совпасть с одним из них (иначе сырок с какао стал бы «какао»).
@@ -1027,7 +1058,9 @@
         if (!all) continue;
         const h0 = it.cs.some((s) => rcSame(s, ts[0])), h1 = ts.length > 1 && it.cs.some((s) => rcSame(s, ts[1]));
         if (!h0 && !h1) continue;
-        const score = (h0 ? 1000 : 0) + it.cs.length * 100 + pos * 5 + it.cs.join('').length;
+        // точное совпадение главного слова важнее длины: «нектар» — это нектар, а не «нектарин»
+        const exact = it.cs.includes(ts[0]) || (ts.length > 1 && it.cs.includes(ts[1]));
+        const score = (h0 ? 1000 : 0) + it.cs.length * 100 + (exact ? 50 : 0) + pos * 5 + it.cs.join('').length;
         if (score > bs) { bs = score; best = it; }
       }
     }
@@ -1069,8 +1102,10 @@
         qr: res.qr, text: res.text, ocrTotal: res.ocrTotal, stamp: res.stamp, info: res.info || {},
         date: !res.qr && res.stamp && res.stamp.date <= U.today() ? res.stamp.date : undefined,
         items: res.items.map((it) => {
+          // название с чека чиним по полному словарю (справочник, прошлые покупки), а не только по встроенному
+          const orig = it.raw ? Receipt.fixName(it.raw, words.list) : it.name;
           // 1) так уже называли эту строку чека раньше; 2) продукт из справочника; 3) название с чека без фасовки
-          return { name: rcName(it.name, cat, words), orig: it.name, qty: it.qty, unit: it.unit, total: it.total, on: true, fixed: it.fixed, doubt: it.doubt };
+          return { name: rcName(orig, cat, words), orig, qty: it.qty, unit: it.unit, total: it.total, on: true, fixed: it.fixed, doubt: it.doubt };
         }),
       };
       // скидка из чека сходится с итогом — сразу разносим её по позициям
@@ -1083,12 +1118,14 @@
         receiptDraft.discountApplied = res.discount;
       }
       receiptDraft.qrraw = res.qrraw;
+      rcKeepDraft();
       // есть токен и реквизиты — берём точные данные из ФНС
       if (fnsToken() && res.qrraw) {
         setStage('Сверяю с базой ФНС…', 0.98);
         await rcAskFns(receiptDraft);
         if (id !== receiptScanId || !$('#modal').open) return;
       }
+      rcKeepDraft();
       openModal(receiptForm(receiptDraft));
     } catch (e) {
       if (id === receiptScanId) { closeModal(); fail(e); }
@@ -1255,14 +1292,20 @@
     const date = d.date || U.today();
     // чек узнаём по QR-коду, а без него — по дате, времени и итогу из текста
     const key = d.qr ? d.qr.key : d.stamp && d.ocrTotal ? `t-${d.stamp.date}-${d.stamp.time}-${money(d.ocrTotal)}` : '';
-    if (key && Store.all('shopping').some((s) => s.receipt === key)) {
-      if (!(await confirmBox('Этот чек уже добавляли. Добавить ещё раз?', 'Добавить'))) return;
+    // Один и тот же чек бывает в двух видах: бумажный (или «копия чека») и электронный с почты, и ключи у них разные.
+    // Поэтому ещё сверяем день и итог чека.
+    const total = rcTarget(d), totalKey = total ? money(total) : '';
+    const dup = Store.all('shopping').some((s) => s.receipt && ((key && s.receipt === key) || (totalKey && s.receipt_sum === totalKey && s.bought_on === date)));
+    if (dup && !(await confirmBox(`Чек от ${U.fmtDate(date)}${totalKey ? ` на ${totalKey} ₽` : ''} уже добавляли (может быть, его бумажную или электронную копию). Добавить ещё раз?`, 'Добавить'))) {
+      openModal(receiptForm(d));
+      return;
     }
-    const base = { status: 'bought', bought_on: date, shop: d.shop || '', receipt: key, created_on: U.today() };
+    const base = { status: 'bought', bought_on: date, shop: d.shop || '', receipt: key || (totalKey ? `s-${date}-${totalKey}` : ''), receipt_sum: totalKey, created_on: U.today() };
     if (lump) {
       const sum = rcTarget(d) || d.items.filter((i) => i.on).reduce((s, i) => s + num2(i.total), 0);
       if (!sum) { toast('Нет суммы: впишите позиции или переснимите чек с QR-кодом'); return; }
       await Store.save('shopping', { ...base, name: d.shop ? `Чек: ${d.shop}` : 'Чек', qty: '', unit: '', price: money(sum), lump: true });
+      receiptDraft = null; rcKeepDraft();
       closeModal();
       toast(`Чек сохранён одной суммой: ${money(sum)} ₽`);
       return;
@@ -1280,8 +1323,8 @@
     await Store.saveMany('shopping', out);
     if (toPantry) for (const r of rows) await addToPantry(r.name, r.unit === 'шт' && !r.qty ? '1' : r.qty, r.unit);
     await rcLearn(rows.filter((r) => r.orig)); // запоминаем, как вы назвали строки чека
+    receiptDraft = null; rcKeepDraft();
     closeModal();
-    receiptDraft = null;
     const sum = rows.reduce((s, r) => s + num2(r.total), 0);
     toast(`Чек сохранён: ${rows.length} поз. на ${money(sum)} ₽${used.size ? `, из списка покупок: ${used.size}` : ''}`);
   }
@@ -2067,6 +2110,11 @@
       toast('Скидка распределена по позициям');
     },
     'rc-lump': (el) => saveReceipt(el.closest('form'), true),
+    'rc-resume': () => { if (receiptDraft) { openModal(receiptForm(receiptDraft)); refresh(); } },
+    'rc-drop': async () => {
+      if (!(await confirmBox('Отбросить несохранённый чек? Правки в нём пропадут.', 'Отбросить'))) return;
+      receiptDraft = null; rcKeepDraft(); refresh();
+    },
     serv: (el) => {
       const r = Store.get('recipes', el.dataset.id), b = baseServings(r);
       if (!b) return;
@@ -2742,8 +2790,27 @@
   window.addEventListener('resize', placeSuggest);
   $('#modal').addEventListener('close', hideSuggest);
 
-  // клик по фону закрывает окно
-  $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+  // клик по фону закрывает окно — но не форму, в которой уже что-то правили, и не проверку чека:
+  // на телефоне по фону часто тыкают, чтобы убрать клавиатуру, и правки терялись
+  $('#modal').addEventListener('input', () => { $('#modal').dataset.dirty = '1'; });
+  $('#modal').addEventListener('click', (e) => {
+    if (e.target.id !== 'modal') return;
+    const d = $('#modal');
+    if (d.dataset.dirty || d.querySelector('form.receipt')) { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return; }
+    closeModal();
+  });
+  // Enter в полях чека переходит к следующему полю, а не сохраняет чек раньше времени
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.defaultPrevented) return;
+    const el = e.target, f = el.closest && el.closest('form.receipt');
+    if (!f || el.tagName !== 'INPUT') return;
+    e.preventDefault();
+    const fields = [...f.querySelectorAll('input:not([type="checkbox"]):not([type="hidden"]):not([readonly]), select')].filter((x) => !x.disabled && x.offsetParent);
+    const next = fields[fields.indexOf(el) + 1];
+    if (next && next.tagName === 'INPUT') next.focus(); else el.blur();
+  });
+  // окно закрыли клавишей Esc (на компьютере) — тоже сохраняем черновик чека
+  $('#modal').addEventListener('cancel', () => { if (rcBeforeClose()) setTimeout(() => { if (route().name === 'shopping') refresh(); }, 0); });
 
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
   Store.onChange(() => { if (!needLogin) { render.keepScroll = true; render(); setTimeout(fixRecipeKeys, 0); setTimeout(autoSeedSteps, 0); } });

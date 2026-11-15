@@ -11,6 +11,7 @@
   const CACHE = 'kuhnya-ocr-v1';
 
   let ready = null, det = null, rec = null, dict = null;
+  const opts = { wavy: true }; // для сравнения на проверочных фото
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
@@ -95,14 +96,14 @@
     const out = await det.run({ [det.inputNames[0]]: new window.ort.Tensor('float32', f, [1, 3, H, W]) });
     const m = out[det.outputNames[0]].data;
     // связные области карты вероятностей → прямоугольники
-    const T = 0.3, seen = new Uint8Array(n), boxes = [], stack = [];
+    const T = 0.3, seen = new Uint8Array(n), boxes = [], stack = [], pix = [];
     for (let p0 = 0; p0 < n; p0++) {
       if (seen[p0] || m[p0] < T) continue;
       let x1 = W, x2 = 0, y1 = H, y2 = 0, cnt = 0, sum = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-      seen[p0] = 1; stack.push(p0);
+      seen[p0] = 1; stack.push(p0); pix.length = 0;
       while (stack.length) {
         const q = stack.pop(), x = q % W, y = (q - x) / W;
-        cnt++; sum += m[q];
+        cnt++; sum += m[q]; pix.push(q);
         sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
         if (x < x1) x1 = x; if (x > x2) x2 = x; if (y < y1) y1 = y; if (y > y2) y2 = y;
         if (x > 0 && !seen[q - 1] && m[q - 1] >= T) { seen[q - 1] = 1; stack.push(q - 1); }
@@ -120,9 +121,66 @@
         const cxx = sxx / cnt - (sx / cnt) ** 2, cyy = syy / cnt - (sy / cnt) ** 2, cxy = sxy / cnt - (sx / cnt) * (sy / cnt);
         angle = (0.5 * Math.atan2(2 * cxy, cxx - cyy) * 180) / Math.PI;
       }
+      // Длинная строка на изогнутом чеке идёт «волной»: её прямоугольник выходит в 2–3 раза выше букв и
+      // захватывает соседние строки — распознаватель читает кашу. Для такой строки запоминаем её среднюю линию,
+      // а перед чтением «распрямляем»: каждый столбик пикселей сдвигаем по высоте на эту линию.
+      if (opts.wavy && bw > bh * 3 && bw >= 60) {
+        const wv = wavy(pix, W, x1, bw, bh);
+        if (wv) {
+          const lp = (bw * wv.tk * 1.6) / (2 * (bw + wv.tk)), half = wv.tk / 2 + lp;
+          let lo = Infinity, hi = -Infinity;
+          for (const c of wv.cy) { if (c < lo) lo = c; if (c > hi) hi = c; }
+          boxes.push({ x1: Math.max(0, x1 - lp), y1: Math.max(0, lo - half), x2: Math.min(canvas.width, x2 + 1 + lp), y2: Math.min(canvas.height, hi + half),
+            angle, len: bw, curve: { x0: x1, cy: wv.cy, h: Math.round(half * 2) }, my: (lo + hi) / 2 });
+          continue;
+        }
+      }
       boxes.push({ x1: Math.max(0, x1 - pad), y1: Math.max(0, y1 - pad), x2: Math.min(canvas.width, x2 + 1 + pad), y2: Math.min(canvas.height, y2 + 1 + pad), angle, len: bw });
     }
     return boxes;
+  }
+  // Средняя линия пятна строки по столбцам (сглаженная) и толщина букв — если строка «гуляет» по высоте
+  // заметно сильнее толщины букв. null — строка ровная, распрямлять не нужно.
+  function wavy(pix, W, x0, bw, bh) {
+    const top = new Int32Array(bw).fill(1e9), bot = new Int32Array(bw).fill(-1), cnt = new Int32Array(bw);
+    for (const q of pix) {
+      const x = q % W, y = (q - x) / W, i = x - x0;
+      cnt[i]++; if (y < top[i]) top[i] = y; if (y > bot[i]) bot[i] = y;
+    }
+    const th = [];
+    for (let i = 0; i < bw; i++) if (cnt[i]) th.push(bot[i] - top[i] + 1);
+    th.sort((a, b) => a - b);
+    const tk = th[th.length >> 1] || 0;
+    if (!tk || bh <= tk * 1.6 + 2) return null;
+    // середина по столбцам; пустые столбцы — по соседям
+    const mid = new Float32Array(bw);
+    let last = -1;
+    for (let i = 0; i < bw; i++) {
+      if (!cnt[i]) continue;
+      mid[i] = (top[i] + bot[i]) / 2;
+      if (last >= 0 && i - last > 1) for (let j = last + 1; j < i; j++) mid[j] = mid[last] + ((mid[i] - mid[last]) * (j - last)) / (i - last);
+      last = i;
+    }
+    // сглаживание окном в ~3 высоты букв: хвосты «Ц», «Д», «Щ» и точки не должны дёргать линию
+    const r = Math.max(2, Math.round(tk * 1.5)), cy = new Float32Array(bw), pre = new Float64Array(bw + 1);
+    for (let i = 0; i < bw; i++) pre[i + 1] = pre[i] + mid[i];
+    for (let i = 0; i < bw; i++) { const a = Math.max(0, i - r), b = Math.min(bw, i + r + 1); cy[i] = (pre[b] - pre[a]) / (b - a); }
+    return { cy, tk };
+  }
+  // распрямить «волнистую» строку: столбик x берём из высоты cy(x) ± h/2
+  function straighten(canvas, b) {
+    const { x0, cy, h } = b.curve, w = Math.max(1, Math.round(b.x2 - b.x1));
+    const t = document.createElement('canvas'); t.width = w; t.height = h;
+    const tc = t.getContext('2d');
+    tc.fillStyle = '#fff'; tc.fillRect(0, 0, w, h);
+    for (let i = 0; i < w; i++) {
+      const x = Math.round(b.x1) + i, k = Math.min(cy.length - 1, Math.max(0, x - x0));
+      if (x >= canvas.width) break;
+      // источник не должен выходить за край картинки (Safari тогда не рисует ничего)
+      const y0 = Math.round(cy[k] - h / 2), sy = Math.max(0, y0), sh = Math.min(h - (sy - y0), canvas.height - sy);
+      if (sh > 0) tc.drawImage(canvas, x, sy, 1, sh, i, sy - y0, 1, sh);
+    }
+    return t;
   }
   // общий наклон строк в градусах (по часовой — плюс): медиана по длинным кускам текста
   function skewOf(boxes) {
@@ -135,7 +193,9 @@
   }
 
   // ---------- Распознаватель: прочитать один кусок ----------
-  async function readBox(canvas, b) {
+  async function readBox(canvas, box) {
+    let b = box;
+    if (box.curve) { canvas = straighten(canvas, box); b = { x1: 0, y1: 0, x2: canvas.width, y2: canvas.height }; }
     const sw = b.x2 - b.x1, sh = b.y2 - b.y1, H = 48, W = Math.min(2400, Math.max(16, Math.round((sw * H) / sh)));
     const t = document.createElement('canvas'); t.width = W; t.height = H;
     const tc = t.getContext('2d', { willReadFrequently: true });
@@ -158,7 +218,7 @@
 
   // Прочитать картинку целиком → строки сверху вниз, в каждой куски слева направо.
   // Возвращает { lines: [{ y, parts: [{ x1, x2, text, conf }] }], medH, conf }.
-  const medianH = (boxes) => { const hs = boxes.map((b) => b.y2 - b.y1).sort((a, b) => a - b); return hs.length ? hs[hs.length >> 1] : 0; };
+  const medianH = (boxes) => { const hs = boxes.map((b) => (b.curve ? b.curve.h : b.y2 - b.y1)).sort((a, b) => a - b); return hs.length ? hs[hs.length >> 1] : 0; };
   // только найти текст (быстро): нужно, чтобы подобрать масштаб до чтения
   async function find(canvas) {
     await load();
@@ -178,10 +238,11 @@
     }
     const good = boxes.filter((b) => b.text);
     // в строку собираем куски, у которых середины по высоте близки
-    good.sort((a, b) => (a.y1 + a.y2) - (b.y1 + b.y2));
+    const mid = (b) => (b.my != null ? b.my : (b.y1 + b.y2) / 2);
+    good.sort((a, b) => mid(a) - mid(b));
     const lines = [];
     for (const b of good) {
-      const cy = (b.y1 + b.y2) / 2, L = lines[lines.length - 1];
+      const cy = mid(b), L = lines[lines.length - 1];
       if (L && Math.abs(L.y - cy) < medH * 0.45) { L.parts.push(b); L.y = (L.y * (L.parts.length - 1) + cy) / L.parts.length; }
       else lines.push({ y: cy, parts: [b] });
     }
@@ -190,5 +251,5 @@
     return { lines, medH, conf, width: canvas.width, height: canvas.height };
   }
 
-  window.OCR = { load, read, find };
+  window.OCR = { load, read, find, opts };
 })();

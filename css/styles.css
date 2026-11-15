@@ -541,6 +541,8 @@ label.btn.loading { opacity: .6; pointer-events: none; }
   .rc-row > .rc-price { grid-area: p; }
   .rc-row > .icon-btn { grid-area: d; }
 }
+.rc-draft { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border-color: var(--accent, #c96); }
+.rc-draft .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .rc-sum { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; font-size: .92rem; display: flex; flex-direction: column; gap: 4px; }
 .rc-raw summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
 .rc-raw textarea { margin-top: 6px; font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
