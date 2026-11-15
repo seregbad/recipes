@@ -528,7 +528,8 @@
         if (token) await probe('Посредник: данные', `${PROXY}${all}`, { headers: { ...h, Authorization: 'Bearer ' + token } }, 25000);
       }
       await probe('База напрямую: короткий запрос', `${cfg.supabaseUrl}/auth/v1/settings`, { headers: h });
-      if (token) await probe('База напрямую: данные', `${cfg.supabaseUrl}${all}`, { headers: { ...h, Authorization: 'Bearer ' + token } }, 25000);
+      // с посредником прямой доступ — только для сравнения, долго его не ждём
+      if (token) await probe('База напрямую: данные', `${cfg.supabaseUrl}${all}`, { headers: { ...h, Authorization: 'Bearer ' + token } }, PROXY ? 10000 : 25000);
     }
     await probe('Cloudflare: 100 КБ', `https://speed.cloudflare.com/__down?bytes=100000&nocache=${t}`);
     await probe('Библиотеки (jsDelivr)', `https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js?nocache=${t}`);

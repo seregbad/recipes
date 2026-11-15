@@ -1067,6 +1067,7 @@
           : 'QR-код не нашёлся: проверьте дату. Сумму считаю по позициям.'}
         ${d.discountApplied ? `<br>${icon('check', 'tiny')} Скидка ${money(d.discountApplied)} ₽ из чека уже разнесена по позициям.` : ''}
         ${d.items.some((i) => i.fixed) ? `<br>${icon('check', 'tiny')} В ${d.items.filter((i) => i.fixed).length} поз. цифра прочиталась неточно — исправлена по проверке «количество × цена = сумма».` : ''}</p>
+      ${d.info && d.info.engine === 'tess' ? `<p class="small warn-text">Чек прочитан <b>запасным способом</b> (он заметно хуже): нейросеть на этом устройстве не сработала — ${esc(d.info.nnError || 'причина неизвестна')}. Пришлите снимок этого окна, разберёмся.</p>` : d.info && d.info.engine ? `<p class="muted small">Распознавание: нейросеть${d.info.conf ? `, уверенность ${d.info.conf}%` : ''}.</p>` : ''}
       ${d.info && d.info.textH && d.info.textH < 13 ? `<p class="small warn-text">Чек снят мелко (буквы около ${d.info.textH} px), названия могли прочитаться с ошибками. Длинный чек лучше снимать двумя-тремя фото по частям с небольшим перекрытием и выбирать их все сразу — приложение склеит.</p>` : ''}
       <div class="grid2">
         <label>Дата покупки<input type="date" name="date" value="${esc(date)}" max="${U.today()}" required></label>
@@ -1748,7 +1749,7 @@
     if (small && !small.ok) return '<b>База недоступна с этого интернета.</b> Сайт открывается, а Supabase не отвечает: похоже на блокировку у оператора. Без VPN синхронизация работать не будет; изменения копятся на устройстве и уйдут, когда связь с базой появится.' + howTo;
     if ((big && !big.ok) || (cf && !cf.ok)) return '<b>Оператор обрывает большие ответы от Cloudflare</b> (на нём работает Supabase): короткие запросы проходят, а загрузка данных — нет. Поэтому без VPN кажется, что синхронизации нет.' + howTo;
     if (lib && !lib.ok) return '<b>База доступна</b>, но не загружаются библиотеки с jsDelivr (нужны для загрузки рецептов из файлов). Синхронизации это не мешает.';
-    const slow = rows.some((r) => r.ok && r.ms > 6000);
+    const slow = rows.some((r) => r.ok && r.ms > 6000 && !r.name.startsWith('Распознавание'));
     return slow ? '<b>Связь есть, но медленная.</b> Синхронизация работает, просто дольше обычного.' : '<b>Всё доступно.</b> Синхронизация должна работать. Если сейчас включён VPN — повторите проверку без него.';
   }
 
@@ -2064,13 +2065,30 @@
     diag: async () => {
       const rowsHtml = (rows, done) => `<div class="form">
         <div class="form-head"><h2>Проверка связи</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
-        <ul class="diag">${rows.map((r) => `<li class="${r.ok ? (r.ms > 6000 ? 'slow' : 'ok') : 'bad'}"><span class="dot">${icon(r.ok ? 'check' : 'x')}</span>
-          <span><b>${esc(r.name)}</b><br><small>${r.ok ? `${(r.ms / 1000).toFixed(1).replace('.', ',')} с${r.kb ? ` · ${String(r.kb).replace('.', ',')} КБ` : ''}${r.ms > 6000 ? ' · медленно' : ''}` : esc(r.note)}</small></span></li>`).join('')}</ul>
+        <ul class="diag">${rows.map((r) => `<li class="${r.ok ? (r.ms > (r.name.startsWith('Распознавание') ? 30000 : 6000) ? 'slow' : 'ok') : 'bad'}"><span class="dot">${icon(r.ok ? 'check' : 'x')}</span>
+          <span><b>${esc(r.name)}</b><br><small>${r.ok ? `${(r.ms / 1000).toFixed(1).replace('.', ',')} с${r.kb ? ` · ${String(r.kb).replace('.', ',')} КБ` : ''}${r.ms > (r.name.startsWith('Распознавание') ? 30000 : 6000) ? ' · медленно' : ''}` : esc(r.note)}</small></span></li>`).join('')}</ul>
         <p class="${done ? '' : 'muted'}">${done ? diagVerdict(rows) : 'Проверяю… это до минуты.'}</p>
         ${done ? `<p class="muted small">Сделайте проверку без VPN и с VPN — по разнице видно, что режет оператор.</p>` : ''}
       </div>`;
       openModal(rowsHtml([], false));
       const rows = await Store.diagnose((part) => { if ($('#modal').open && $('.diag')) openModal(rowsHtml(part, false)); });
+      // распознавание чеков: загрузить нейросеть и прочитать короткую строку
+      if (window.OCR) {
+        if ($('#modal').open && $('.diag')) openModal(rowsHtml(rows, false));
+        const row = { name: 'Распознавание чеков (нейросеть)', ok: false, ms: 0, kb: 0, note: '' }, t0 = performance.now();
+        try {
+          await OCR.load();
+          const c = document.createElement('canvas'); c.width = 520; c.height = 80;
+          const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+          x.fillStyle = '#111'; x.font = '34px monospace'; x.fillText('МОЛОКО 2.5% 85.99', 16, 52);
+          const r = await OCR.read(c);
+          const text = r.lines.map((L) => L.parts.map((b) => b.text).join(' ')).join(' ');
+          row.ok = /85[.,]99/.test(text);
+          row.note = row.ok ? '' : `прочитано неверно: «${text || 'пусто'}»`;
+        } catch (e) { row.note = String((e && e.message) || e); }
+        row.ms = Math.round(performance.now() - t0);
+        rows.push(row);
+      }
       if ($('#modal').open && $('.diag')) openModal(rowsHtml(rows, true));
     },
     'custom-del': async (el) => {

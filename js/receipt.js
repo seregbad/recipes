@@ -665,9 +665,12 @@
     for (const img of imgs) { qr = await findQR(img).catch(() => null); if (qr) break; }
     onProgress && onProgress({ stage: 'prep', p: 0 });
 
-    let res = null;
+    let res = null, nnError = window.OCR ? '' : 'модуль распознавания не подключён';
     if (window.OCR) {
-      try { res = await scanNN(imgs, onProgress); } catch (e) { console.warn('Нейросеть не загрузилась, читаю чек прежним способом', e); }
+      try { res = await scanNN(imgs, onProgress); } catch (e) {
+        nnError = String((e && e.message) || e).replace(/^Не удалось загрузить распознавание \(|\)\. Нужен интернет при первом запуске$/g, '');
+        console.warn('Нейросеть не сработала, читаю чек прежним способом', e);
+      }
     }
     if (!res) res = await scanTess(imgs, qr, onProgress);
     // QR не нашёлся на исходном фото — пробуем на обрезанном и выровненном
@@ -679,7 +682,7 @@
     const discount = target && Math.abs(sum - target) <= 0.05 ? 0 : parsed.discount;
     return {
       qr, text: res.text, items: parsed.items, ocrTotal: parsed.total, discount, stamp: parsed.stamp,
-      info: { engine: res.engine, conf: Math.round(res.conf), textH: res.textH, fixed: parsed.items.filter((i) => i.fixed).length },
+      info: { engine: res.engine, nnError, conf: Math.round(res.conf), textH: res.textH, fixed: parsed.items.filter((i) => i.fixed).length },
     };
   }
 
