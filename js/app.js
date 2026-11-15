@@ -1873,13 +1873,69 @@
   const seedMap = () => new Map((window.SEED_RECIPES || []).map((s) => [U.norm(s[0]), s]));
   const seedFull = (s) => {
     const x = (window.SEED_STEPS || {})[s[0]] || [];
-    return { time: x[0] || '', ings: s[3] + (x[1] ? '; ' + x[1] : ''), steps: (x[2] || []).join('\n'), note: x[3] || '' };
+    return { time: x[0] || '', ings: s[3] + (x[1] ? '; ' + x[1] : ''), steps: (x[2] || []).join('\n'), note: x[3] || '', url: (window.SEED_SOURCES || {})[s[0]] || '' };
   };
   const ingSig = (list) => (list || []).map((i) => U.norm(`${i.name} ${i.qty || ''} ${i.unit || ''}`)).join('|');
-  // наши блюда, в которых ещё нет шагов приготовления
-  function seedTargets() {
+  // блюдо из таблицы для рецепта: по названию, а если его слегка переименовали — по тем же словам в любом порядке
+  const titleKey = (s) => U.stems(String(s).replace(/\(.*?\)/g, ' ')).slice().sort().join(' ');
+  let seedKeys = null;
+  function seedFor(r) {
     const m = seedMap();
-    return Store.all('recipes').filter((r) => !String(r.steps || '').trim() && m.has(U.norm(r.title)) && seedFull(m.get(U.norm(r.title))).steps);
+    const exact = m.get(U.norm(r.title));
+    if (exact) return exact;
+    if (!seedKeys) seedKeys = new Map((window.SEED_RECIPES || []).map((s) => [titleKey(s[0]), s]));
+    const byWords = seedKeys.get(titleKey(r.title));
+    if (byWords) return byWords;
+    // опечатка или ё/е: «Голубцы ленивыe», «Ежики в томатно сметанном соусе»
+    const n = U.norm(r.title).replace(/[^а-яa-z0-9]/g, '');
+    if (n.length < 5) return null;
+    let best = null, bd = Infinity;
+    for (const s of window.SEED_RECIPES || []) {
+      const k = U.norm(s[0]).replace(/[^а-яa-z0-9]/g, '');
+      if (Math.abs(k.length - n.length) > 3) continue;
+      const d = Receipt.lev(k, n);
+      if (d < bd) { bd = d; best = s; }
+    }
+    return best && bd <= Math.max(1, Math.floor(n.length * 0.12)) ? best : null;
+  }
+  // наши блюда, в которых ещё нет шагов приготовления (auto — кроме тех, где шаги уже дописывались и их убрали)
+  function seedTargets(auto) {
+    return Store.all('recipes').filter((r) => {
+      if (String(r.steps || '').trim() || (auto && r.seedSteps)) return false;
+      const s = seedFor(r);
+      return !!(s && seedFull(s).steps);
+    });
+  }
+  // дописать шаги, время и недостающие ингредиенты; состав обновляется только там, где его не меняли
+  async function applySeedSteps(targets) {
+    let kept = 0;
+    await Store.saveMany('recipes', targets.map((r) => {
+      const s = seedFor(r), f = seedFull(s);
+      const untouched = ingSig(r.ingredients) === ingSig(parseIngredients(s[3].split(';').join('\n')));
+      if (!untouched) kept++;
+      const notes = [String(r.notes || '').replace(SEED_NOTE, 'Рецепт типовой: количества и шаги можно поправить под себя.'), f.note].filter((x) => x && x.trim()).join('\n');
+      return { ...r, steps: f.steps, time: r.time || f.time, servings: r.servings || servWord(s[2]), notes, seedSteps: true, url: r.url || f.url,
+        ingredients: untouched ? parseIngredients(f.ings.split(';').join('\n')) : r.ingredients };
+    }));
+    return kept;
+  }
+  // Автоматически, один раз для каждого блюда: как только данные сверены с базой, дописываем шаги в наши блюда без шагов
+  let seedBusy = false;
+  async function autoSeedSteps() {
+    if (seedBusy || needLogin || !Store.fresh || Store.status().pending) return;
+    // наши блюда, где шаги уже есть, но ещё нет ссылки на рецепт-источник: добавляем её один раз
+    const noLink = Store.all('recipes').filter((r) => !r.url && !r.seedUrl && String(r.steps || '').trim() && seedFor(r) && seedFull(seedFor(r)).url);
+    if (noLink.length) {
+      seedBusy = true;
+      try { await Store.saveMany('recipes', noLink.map((r) => ({ ...r, url: seedFull(seedFor(r)).url, seedUrl: true }))); } catch (e) { console.error(e); } finally { seedBusy = false; }
+    }
+    const targets = seedTargets(true);
+    if (!targets.length) return;
+    seedBusy = true;
+    try {
+      await applySeedSteps(targets);
+      toast(`В ${targets.length} ${U.plural(targets.length, 'блюдо', 'блюда', 'блюд')} из «Меню недели» дописаны шаги приготовления`);
+    } catch (e) { console.error(e); } finally { seedBusy = false; }
   }
 
   // вывод по результатам проверки связи — простыми словами
@@ -2045,16 +2101,7 @@
       const targets = seedTargets();
       if (!targets.length) { toast('Все наши блюда уже с рецептами'); return; }
       if (!(await confirmBox(`Дописать шаги приготовления и время в ${targets.length} ${U.plural(targets.length, 'блюдо', 'блюда', 'блюд')} из «Меню недели»? Состав обновится только там, где вы его не меняли. Блюда, в которых шаги уже записаны, не изменятся.`, 'Дополнить'))) return;
-      const m = seedMap();
-      let kept = 0;
-      await Store.saveMany('recipes', targets.map((r) => {
-        const s = m.get(U.norm(r.title)), f = seedFull(s);
-        const untouched = ingSig(r.ingredients) === ingSig(parseIngredients(s[3].split(';').join('\n')));
-        if (!untouched) kept++;
-        const notes = [String(r.notes || '').replace(SEED_NOTE, 'Рецепт типовой: количества и шаги можно поправить под себя.'), f.note].filter((x) => x && x.trim()).join('\n');
-        return { ...r, steps: f.steps, time: r.time || f.time, servings: r.servings || servWord(s[2]), notes,
-          ingredients: untouched ? parseIngredients(f.ings.split(';').join('\n')) : r.ingredients };
-      }));
+      const kept = await applySeedSteps(targets);
       toast(`Рецепты дополнены: ${targets.length}${kept ? `. В ${kept} состав оставлен вашим` : ''}`);
     },
     'seed-qty': async () => {
@@ -2149,7 +2196,7 @@
       const existing = new Set(Store.all('recipes').map((r) => U.norm(r.title)));
       const list = (window.SEED_RECIPES || []).filter(([t]) => !existing.has(U.norm(t))).map((s) => {
         const f = seedFull(s);
-        return { title: s[0], category: s[1], status: 'liked', url: '', image: '', servings: servWord(s[2]), time: f.time, steps: f.steps,
+        return { title: s[0], category: s[1], status: 'liked', url: f.url, image: '', servings: servWord(s[2]), time: f.time, steps: f.steps, seedSteps: true,
           notes: [SEED_NOTE, f.note].filter(Boolean).join('\n'), ingredients: parseIngredients(f.ings.split(';').join('\n')) };
       });
       if (!list.length) { toast('Все блюда из таблицы уже добавлены'); return; }
@@ -2699,7 +2746,7 @@
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
 
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
-  Store.onChange(() => { if (!needLogin) { render.keepScroll = true; render(); setTimeout(fixRecipeKeys, 0); } });
+  Store.onChange(() => { if (!needLogin) { render.keepScroll = true; render(); setTimeout(fixRecipeKeys, 0); setTimeout(autoSeedSteps, 0); } });
 
   // Рецепты, добавленные через Telegram-бота, приходят без связи со справочником —
   // связываем здесь, где есть полный справочник продуктов.
@@ -2758,6 +2805,7 @@
     } catch (e) { fail(e); }
     render();
     fixRecipeKeys();
+    autoSeedSteps();
     readyHooks.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });

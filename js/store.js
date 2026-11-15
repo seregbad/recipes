@@ -239,6 +239,7 @@
       writeJSON(CACHE_KEY, Store.data);
       fingerprint = `${rows.length}|${rows.reduce((m, r) => (String(r.updated_at || '') > m ? String(r.updated_at) : m), '')}`;
       lastFull = Date.now();
+      Store.fresh = true; // данные в этой сессии уже сверены с базой
       markSynced();
       Store.net = 'ok';
       emit();
@@ -314,6 +315,7 @@
     if (!cloudConfigured) {
       Store.mode = 'local';
       setAll(readJSON(LOCAL_KEY));
+      Store.fresh = true;
       return { needLogin: false };
     }
     Store.mode = 'cloud';
