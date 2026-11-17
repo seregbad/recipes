@@ -27,6 +27,9 @@
     heart: '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     minus: '<path d="M5 12h14"/>',
+    up: '<path d="m6 15 6-6 6 6"/>',
+    down: '<path d="m6 9 6 6 6-6"/>',
+    grip: '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
     x: '<path d="M18 6 6 18M6 6l12 12"/>',
     trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
     edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
@@ -527,6 +530,7 @@
           <button type="button" class="btn" data-act="recipe-import">${icon('download')}<span>Загрузить</span></button></div>
           <small class="muted">${importHint}</small>
         </label>
+        <div id="rf-pick"></div>
         <div class="file-import">
           <label class="btn">${icon('upload')}<span>Из файла</span><input type="file" accept="${RECIPE_FILE_TYPES}" data-act-change="recipe-file" hidden></label>
           <small class="muted" id="rf-status">txt, pdf, Word (docx) или фото страницы из книги: текст разберётся сам</small>
@@ -570,9 +574,60 @@
     const cat = guessCategory(d.title);
     if (cat && !f.category.value) f.category.value = cat;
   }
+  // ---------- Рецепт по ссылке: заполнить форму; страница с несколькими рецептами — список для выбора ----------
+  let pickPage = null; // { source, items: [{ kind: 'recipe' | 'link', title, url?, image, ingredients?, steps? }] }
+  const servText = (s) => (/^\d+$/.test(String(s || '').trim()) ? `${+s} ${U.plural(+s, 'порция', 'порции', 'порций')}` : String(s || ''));
+  const catFromImport = (d) => {
+    if (d.category) { const hit = RECIPE_CATS.find((c) => U.norm(d.category).includes(U.norm(c).slice(0, 5))); if (hit) return hit; }
+    return guessCategory(d.title || '');
+  };
+  // replace — заменить всё в форме (при переключении между рецептами из списка), иначе только заполнить найденное
+  function fillFromImport(form, d, replace) {
+    const ing = d.ingredients || [], st = d.steps || [];
+    if (d.title || replace) form.title.value = d.title || '';
+    if (d.image) setFormPhoto(form, d.image); else if (replace) setFormPhoto(form, '');
+    if (d.servings || replace) form.servings.value = servText(d.servings);
+    if (d.time || replace) form.time.value = d.time || '';
+    if (ing.length || replace) form.ingredients.value = ing.join('\n');
+    if (st.length || replace) form.steps.value = st.join('\n');
+    const cat = catFromImport(d);
+    if (cat && (replace || !form.category.value)) form.category.value = cat;
+  }
+  function recipeFromImport(d, url, host) {
+    return { title: d.title || 'Рецепт', url: url || '', image: d.image || '', status: 'new', category: catFromImport(d),
+      servings: servText(d.servings), time: d.time || '', ingredients: parseIngredients((d.ingredients || []).join('\n')),
+      steps: (d.steps || []).join('\n'), notes: host ? `Со страницы ${host}` : '' };
+  }
+  function updatePickCount(box) {
+    const n = box.querySelectorAll('input[data-pi]:checked').length, b = box.querySelector('[data-act="pick-save"]');
+    if (b) { b.disabled = !n; b.textContent = n ? `Добавить отмеченные (${n})` : 'Отметьте рецепты'; }
+  }
+  function renderPickPage(form, open) {
+    const box = form.querySelector('#rf-pick');
+    if (!box || !pickPage) return;
+    const items = pickPage.items, recipes = items[0] && items[0].kind === 'recipe';
+    if (!open) {
+      box.innerHTML = `<p class="small muted">На этой странице есть ссылки ещё на ${items.length} ${U.plural(items.length, 'рецепт', 'рецепта', 'рецептов')}. <button type="button" class="linklike" data-act="pick-show">Показать список</button></p>`;
+      return;
+    }
+    box.innerHTML = `<div class="pick-page">
+      <p class="small"><b>${recipes ? `На странице ${items.length} ${U.plural(items.length, 'рецепт', 'рецепта', 'рецептов')}` : `Список рецептов: ${items.length}`}.</b>
+        Отметьте нужные и добавьте их сразу, или нажмите «В форму», чтобы проверить один рецепт перед сохранением.${recipes ? '' : ' Ингредиенты и шаги подтянутся с каждой страницы.'}</p>
+      <div class="pick-list">${items.map((it, i) => `<div class="pick-row">
+        <input type="checkbox" data-pi="${i}" aria-label="Выбрать">
+        ${it.image ? `<img src="${esc(it.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="pick-noimg">${icon('book')}</span>`}
+        <span class="pick-title">${esc(it.title)}<small class="muted">${it.kind === 'recipe' ? `${it.ingredients.length} ${U.plural(it.ingredients.length, 'ингредиент', 'ингредиента', 'ингредиентов')} · ${(it.steps || []).length} ${U.plural((it.steps || []).length, 'шаг', 'шага', 'шагов')}` : esc(it.url.replace(/^https?:\/\/(www\.)?/, '').slice(0, 60))}</small></span>
+        <button type="button" class="btn small" data-act="pick-one" data-i="${i}">В форму</button>
+      </div>`).join('')}</div>
+      <div class="row wrap">
+        <button type="button" class="btn small" data-act="pick-all">Отметить все / снять</button>
+        <button type="button" class="btn primary small" data-act="pick-save" disabled>Отметьте рецепты</button>
+      </div>
+    </div>`;
+  }
   function guessCategory(title) {
     const t = U.norm(title);
-    const rules = [['Завтраки', /завтрак/], ['Супы', /суп|борщ|щи |солянк|бульон|уха|окрошк|рассольник/], ['Салаты', /салат|винегрет|оливье/], ['Десерты', /торт|пирожн|десерт|мусс|печенье|кекс|маффин|тирамису|запеканк[аи] творож|сырник/],
+    const rules = [['Завтраки', /завтрак/], ['Супы', /суп|борщ|щи |солянк|бульон|уха|окрошк|рассольник/], ['Салаты', /салат|винегрет|оливье|цезарь|шуба|мимоза|нисуаз|греческий/], ['Десерты', /торт|пирожн|десерт|мусс|печенье|кекс|маффин|тирамису|запеканк[аи] творож|сырник/],
       ['Выпечка', /пирог|пирожк|хлеб|булоч|пицц|блин|оладь|лепёшк|лепешк|ватруш/], ['Завтраки', /каша|омлет|яичниц|гранол|мюсли|тост/], ['Соусы', /соус|заправк|подлив/], ['Напитки', /компот|морс|смузи|коктейл|какао|лимонад/],
       ['Гарниры', /гарнир|пюре|рис отварн|гречк|булгур|кускус/]];
     const hit = rules.find(([, re]) => re.test(t + ' '));
@@ -718,6 +773,28 @@
       <div id="list">${ui.prodTab === 'home' ? pantryList() : catalogList()}</div>`;
   }
 
+  // ---------- Стрелочки «больше / меньше» у количества (Есть дома, Купить) ----------
+  // шаг зависит от единицы и от того, сколько уже есть: 1 кг → 1,5 кг, 0,3 кг → 0,4 кг, 200 г → 250 г
+  const qNum = (q) => { const v = parseFloat(String(q || '').replace(/\s/g, '').replace(',', '.')); return isFinite(v) ? v : 0; };
+  function qtyStep(v, unit) {
+    const u = U.norm(unit || '');
+    if (u === 'кг' || u === 'л') return v < 1 ? (u === 'л' ? 0.25 : 0.1) : 0.5;
+    if (u === 'г' || u === 'мл') return v < 100 ? 10 : v < 500 ? 50 : 100;
+    if (/стакан/.test(u)) return 0.5;
+    return 1; // штуки, пачки, банки…
+  }
+  function stepQty(q, unit, dir) {
+    const v = qNum(q);
+    if (!v) return dir > 0 ? (/^(г|мл)$/.test(U.norm(unit || '')) ? 100 : /^(кг|л)$/.test(U.norm(unit || '')) ? 0.5 : 2) : 0;
+    const s = qtyStep(dir > 0 ? v : v - 1e-9, unit);
+    // ½ кочана → 1 → 2: дробное количество штук сначала доводим до целого
+    const n = dir > 0 ? Math.floor(v / s + 1e-9) * s + s : Math.ceil(v / s - 1e-9) * s - s;
+    return Math.max(0, Math.round(n * 1000) / 1000);
+  }
+  const qtyStepper = (kind, it) => `<span class="qstep">
+      <button type="button" data-act="qty-step" data-kind="${kind}" data-id="${esc(it.id)}" data-d="1" aria-label="Больше" title="Больше">${icon('up')}</button>
+      <button type="button" data-act="qty-step" data-kind="${kind}" data-id="${esc(it.id)}" data-d="-1" aria-label="Меньше" title="Меньше">${icon('down')}</button></span>`;
+
   function pantryList() {
     const home = pantry();
     if (!home.length) return `<div class="empty">${icon('fridge', 'big')}<h3>Пока пусто</h3><p>Добавьте продукты, которые есть дома (выше или из справочника), и в «Подборе» появятся рецепты из них. Купленное из списка покупок попадает сюда само.</p></div>`;
@@ -728,6 +805,7 @@
       <ul class="plist">${groups[c].sort((a, b) => a.name.localeCompare(b.name, 'ru')).map((p) => `
         <li>
           <button class="pname" data-act="pantry-edit" data-id="${esc(p.id)}"><b>${esc(p.name)}</b>${p.qty || p.unit ? `<small>${esc(U.fmtQty(p.qty, p.unit))}</small>` : ''}</button>
+          ${qtyStepper('pantry', p)}
           <button class="icon-btn" title="Закончилось: в покупки" aria-label="Закончилось, добавить в покупки" data-act="pantry-out" data-id="${esc(p.id)}">${icon('cart')}</button>
           <button class="icon-btn" title="Убрать" aria-label="Убрать" data-act="pantry-del" data-id="${esc(p.id)}">${icon('trash')}</button>
         </li>`).join('')}</ul>`).join('');
@@ -866,6 +944,7 @@
     return `
       <div class="page-head"><h1>Покупки</h1>
         <label class="btn">${icon('camera')}<span>Чек</span><input type="file" accept="image/*" multiple data-act-change="receipt" hidden></label></div>
+      ${scanCrashNote ? `<div class="card warn-card"><p class="small">${esc(scanCrashNote)}</p><button type="button" class="btn small" data-act="scan-note-ok">Понятно</button></div>` : ''}
       ${rcDraftNote()}
       <div class="seg">
         <button class="${ui.shopTab === 'todo' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="todo">Купить · ${todo.length}</button>
@@ -908,6 +987,7 @@
       return `${head}<li>
         <button class="checkbox" data-act="shop-buy" data-id="${esc(s.id)}" aria-label="Купили">${icon('check')}</button>
         <button class="pname" data-act="shop-edit" data-id="${esc(s.id)}"><b>${esc(s.name)}</b><small>${esc([U.fmtQty(s.qty, s.unit), s.note].filter(Boolean).join(' · '))}</small></button>
+        ${qtyStepper('shopping', s)}
         <button class="icon-btn" aria-label="Удалить" data-act="shop-del" data-id="${esc(s.id)}">${icon('trash')}</button>
       </li>`;
     }).join('')}</ul>
@@ -1074,7 +1154,28 @@
     const inCat = cat.some((c) => c.name === product);
     return inCat && U.sameIng(learned.name, product) && U.stems(product).length > U.stems(learned.name).length ? product : learned.name;
   }
+  // Если iPhone перезапустил приложение посреди распознавания (не хватило памяти) или пока была открыта камера,
+  // после запуска объясняем, что случилось, и включаем экономный режим распознавания.
+  const SCAN_MARK = 'kuhnya-scan-pending', PICK_MARK = 'kuhnya-pick-pending';
+  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* без памяти */ } };
+  let scanCrashNote = '';
+  (function checkScanCrash() {
+    const fresh = (k) => { const t = +lsGet(k); return t && Date.now() - t < 15 * 60 * 1000; };
+    if (fresh(SCAN_MARK)) {
+      lsSet('kuhnya-ocr-lowmem', '1');
+      scanCrashNote = 'Распознавание чека прервалось: телефону не хватило памяти, и он перезапустил приложение. Теперь включён экономный режим, попробуйте ещё раз. Помогает закрыть другие приложения, а длинный чек снять двумя фото.';
+    } else if (fresh(PICK_MARK)) {
+      scanCrashNote = 'Пока была открыта камера, телефон перезапустил приложение (так iPhone иногда освобождает память). Надёжнее сфотографировать чек обычной камерой, а потом в «Чек» выбрать фото из галереи.';
+    }
+    lsSet(SCAN_MARK, null); lsSet(PICK_MARK, null);
+  })();
   async function openReceiptScan(files) {
+    lsSet(PICK_MARK, null);
+    lsSet(SCAN_MARK, String(Date.now()));
+    try { await openReceiptScanInner(files); } finally { lsSet(SCAN_MARK, null); }
+  }
+  async function openReceiptScanInner(files) {
     const id = ++receiptScanId;
     const setStage = (text, p) => {
       if (id !== receiptScanId || !$('#modal').open) return;
@@ -1082,7 +1183,7 @@
       if (t) t.textContent = text;
       if (bar) bar.style.width = Math.round((p || 0) * 100) + '%';
     };
-    openModal(`<div class="form">
+    openModal(`<div class="form" data-keep>
       <div class="form-head"><h2>Читаю чек…</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
       <p id="rc-stage">Открываю фото…</p>
       <div class="progress"><i id="rc-bar"></i></div>
@@ -1726,12 +1827,13 @@
         ${hook('menuActions')}
       </div>
       <p class="muted small">«Заполнить пустое» подставляет на завтрак завтрак, на обед суп, на ужин второе с гарниром. Чаще выбираются понравившиеся блюда, те, что давно не готовили, и те, для которых продукты уже есть дома. Повторов за неделю нет, прошедшие дни не трогаются.</p>
+      ${filled ? `<p class="muted small">Чтобы перенести блюдо на другой день или приём пищи, потяните его за точки ${icon('grip', 'tiny')} слева.</p>` : ''}
       <div class="week">${days.map((d, i) => {
         const day = menuDay(d);
         return `<section class="day ${d === today ? 'today' : ''} ${d < today ? 'past' : ''}">
           <h3>${WD[i]}, ${esc(U.fmtDate(d))}${d === today ? ' <em class="tag ok">сегодня</em>' : ''}</h3>
-          ${SLOTS.map(([k, l]) => `<div class="slot"><span class="slot-l">${l}</span><div class="dishes">
-            ${(day[k] || []).map((x, j) => `<span class="dish">${freezerBadge(inFreezer(x.rid, dishTitle(x)))}${x.rid ? `<a href="#/recipe/${encodeURIComponent(x.rid)}">${esc(dishTitle(x))}</a>` : `<button class="dish-text" data-act="menu-text-dish" data-date="${d}" data-slot="${k}" data-j="${j}" title="Блюдо без рецепта">${esc(dishTitle(x))}</button>`}<button data-act="menu-del" data-date="${d}" data-slot="${k}" data-j="${j}" aria-label="Убрать">${icon('x')}</button></span>`).join('')}
+          ${SLOTS.map(([k, l]) => `<div class="slot" data-date="${d}" data-slot="${k}"><span class="slot-l">${l}</span><div class="dishes">
+            ${(day[k] || []).map((x, j) => `<span class="dish" data-j="${j}"><span class="grip" data-grip data-date="${d}" data-slot="${k}" data-j="${j}" title="Потяните, чтобы перенести" aria-label="Перенести блюдо">${icon('grip')}</span>${freezerBadge(inFreezer(x.rid, dishTitle(x)))}${x.rid ? `<a href="#/recipe/${encodeURIComponent(x.rid)}">${esc(dishTitle(x))}</a>` : `<button class="dish-text" data-act="menu-text-dish" data-date="${d}" data-slot="${k}" data-j="${j}" title="Блюдо без рецепта">${esc(dishTitle(x))}</button>`}<button data-act="menu-del" data-date="${d}" data-slot="${k}" data-j="${j}" aria-label="Убрать">${icon('x')}</button></span>`).join('')}
             <button class="dish add" data-act="menu-pick" data-date="${d}" data-slot="${k}" aria-label="Добавить блюдо: ${l}">${icon('plus')}</button>
           </div></div>`).join('')}
         </section>`;
@@ -2110,6 +2212,7 @@
       toast('Скидка распределена по позициям');
     },
     'rc-lump': (el) => saveReceipt(el.closest('form'), true),
+    'scan-note-ok': () => { scanCrashNote = ''; refresh(); },
     'rc-resume': () => { if (receiptDraft) { openModal(receiptForm(receiptDraft)); refresh(); } },
     'rc-drop': async () => {
       if (!(await confirmBox('Отбросить несохранённый чек? Правки в нём пропадут.', 'Отбросить'))) return;
@@ -2171,18 +2274,69 @@
       el.disabled = true; el.classList.add('loading');
       try {
         const d = await Store.importRecipe(url);
-        if (d.title) form.title.value = d.title;
-        if (d.image) setFormPhoto(form, d.image);
-        if (d.servings) form.servings.value = d.servings;
-        if (d.time) form.time.value = d.time;
-        if (d.ingredients && d.ingredients.length) form.ingredients.value = d.ingredients.join('\n');
-        if (d.steps && d.steps.length) form.steps.value = d.steps.join('\n');
-        if (d.category && !form.category.value) {
-          const hit = RECIPE_CATS.find((c) => U.norm(d.category).includes(U.norm(c).slice(0, 5)));
-          if (hit) form.category.value = hit;
+        const many = (d.many || []).filter((r) => r.ingredients && r.ingredients.length);
+        const links = d.links || [];
+        const found = d.ingredients && d.ingredients.length >= 2;
+        // на странице подборка рецептов — сразу предлагаем выбрать
+        if (many.length >= 2) {
+          pickPage = { source: url, items: many.map((r) => ({ ...r, kind: 'recipe' })) };
+          renderPickPage(form, true);
+          toast(`На странице ${many.length} ${U.plural(many.length, 'рецепт', 'рецепта', 'рецептов')}: выберите нужные`);
+          return;
         }
-        toast(d.ingredients && d.ingredients.length ? 'Рецепт загружен, проверьте и сохраните' : 'Нашёл только название: ингредиенты на этом сайте не размечены, вставьте их вручную');
+        if (!found && links.length >= 3) {
+          pickPage = { source: url, items: links.map((l) => ({ ...l, kind: 'link' })) };
+          renderPickPage(form, true);
+          toast('Это страница со списком рецептов: выберите нужные');
+          return;
+        }
+        fillFromImport(form, d);
+        // одиночный рецепт, но на странице есть ссылки на другие — можно открыть список
+        if (links.length >= 3) { pickPage = { source: url, items: links.map((l) => ({ ...l, kind: 'link' })) }; renderPickPage(form, false); } else $('#rf-pick').innerHTML = '';
+        toast(found ? 'Рецепт загружен, проверьте и сохраните' : 'Нашёл только название: ингредиенты на этом сайте не размечены, вставьте их вручную');
       } catch (e) { fail(e); } finally { el.disabled = false; el.classList.remove('loading'); }
+    },
+    'pick-show': (el) => renderPickPage(el.closest('form'), true),
+    'pick-all': (el) => {
+      const box = el.closest('#rf-pick'), all = [...box.querySelectorAll('input[data-pi]')];
+      const on = !all.every((x) => x.checked);
+      all.forEach((x) => { x.checked = on; });
+      updatePickCount(box);
+    },
+    // один рецепт из списка — в открытую форму, чтобы проверить и сохранить
+    'pick-one': async (el) => {
+      const form = el.closest('form'), it = pickPage && pickPage.items[+el.dataset.i];
+      if (!it) return;
+      el.disabled = true; el.classList.add('loading');
+      try {
+        const d = it.kind === 'link' ? await Store.importRecipe(it.url) : it;
+        fillFromImport(form, { ...d, image: d.image || it.image, title: d.title || it.title }, true);
+        form.url.value = it.kind === 'link' ? it.url : pickPage.source;
+        $('#rf-pick').innerHTML = `<p class="small muted">«${esc(form.title.value)}» в форме. <button type="button" class="linklike" data-act="pick-show">Вернуться к списку</button></p>`;
+        form.title.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      } catch (e) { fail(e); } finally { el.disabled = false; el.classList.remove('loading'); }
+    },
+    // отмеченные — сразу в «Не пробовали»
+    'pick-save': async (el) => {
+      const box = el.closest('#rf-pick');
+      const chosen = [...box.querySelectorAll('input[data-pi]:checked')].map((x) => pickPage.items[+x.dataset.pi]).filter(Boolean);
+      if (!chosen.length) { toast('Отметьте рецепты галочками'); return; }
+      el.disabled = true;
+      const done = [], failed = [];
+      let host = '';
+      try { host = new URL(pickPage.source).hostname.replace(/^www\./, ''); } catch (e) { /* без адреса */ }
+      for (const [n, it] of chosen.entries()) {
+        el.textContent = `Добавляю ${n + 1} из ${chosen.length}…`;
+        try {
+          const d = it.kind === 'link' ? await Store.importRecipe(it.url) : it;
+          if (!d.ingredients || !d.ingredients.length) { failed.push(it.title); continue; }
+          done.push(recipeFromImport({ ...d, title: d.title || it.title, image: d.image || it.image }, it.kind === 'link' ? it.url : pickPage.source, host));
+        } catch (e) { failed.push(it.title); }
+      }
+      if (done.length) await Store.saveMany('recipes', done);
+      closeModal();
+      toast(`Добавлено рецептов: ${done.length}${failed.length ? `. Не получилось: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}` : ''}`, failed.length && !done.length ? 'err' : '');
+      if (done.length) { ui.rStatus = 'new'; saveUI(); location.hash = '#/recipes'; refresh(); }
     },
 
     'cooked-open': (el) => openModal(cookedForm(Store.get('recipes', el.dataset.id))),
@@ -2405,6 +2559,18 @@
       const savva = r.category === 'Детское (Савва)';
       if (savva) ui.presOwner = 'savva';
       openModal(preserveForm({ name: r.title, recipe_id: r.id, owner: savva ? 'savva' : 'family', kind: r.category === 'Заготовки' ? 'jar' : 'freeze' }));
+    },
+    'qty-step': async (el) => {
+      const kind = el.dataset.kind, it = Store.get(kind, el.dataset.id);
+      if (!it) return;
+      const dir = Number(el.dataset.d), next = stepQty(it.qty, it.unit, dir);
+      if (next <= 0) {
+        if (kind === 'pantry') {
+          if (await confirmBox(`«${it.name}» закончилось? Убрать из «Есть дома»?`, 'Убрать')) await Store.remove('pantry', it.id);
+        } else toast('Меньше уже некуда. Чтобы убрать из списка, нажмите корзину');
+        return;
+      }
+      await Store.save(kind, { ...it, qty: U.fmtNum(next) });
     },
     'preserve-dec': async (el) => {
       const p = Store.get('preserves', el.dataset.id);
@@ -2641,6 +2807,7 @@
       if (box) box.innerHTML = receiptSumHtml(receiptDraft);
     }
     if (el.name === 'expires_on') el.removeAttribute('data-auto');
+    if (el.dataset.pi !== undefined) updatePickCount(el.closest('#rf-pick'));
   });
   document.addEventListener('change', (e) => {
     const el = e.target;
@@ -2796,7 +2963,7 @@
   $('#modal').addEventListener('click', (e) => {
     if (e.target.id !== 'modal') return;
     const d = $('#modal');
-    if (d.dataset.dirty || d.querySelector('form.receipt')) { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return; }
+    if (d.dataset.dirty || d.querySelector('form.receipt, [data-keep]')) { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return; }
     closeModal();
   });
   // Enter в полях чека переходит к следующему полю, а не сохраняет чек раньше времени
@@ -2810,7 +2977,103 @@
     if (next && next.tagName === 'INPUT') next.focus(); else el.blur();
   });
   // окно закрыли клавишей Esc (на компьютере) — тоже сохраняем черновик чека
-  $('#modal').addEventListener('cancel', () => { if (rcBeforeClose()) setTimeout(() => { if (route().name === 'shopping') refresh(); }, 0); });
+  $('#modal').addEventListener('cancel', (e) => {
+    // пока читается чек, «Назад» на Android не должен выбрасывать результат
+    if ($('#modal [data-keep]')) { e.preventDefault(); return; }
+    if (rcBeforeClose()) setTimeout(() => { if (route().name === 'shopping') refresh(); }, 0); });
+
+  // открыли выбор фото чека: если телефон перезапустит приложение, пока открыта камера, после запуска это объясним
+  document.addEventListener('click', (e) => {
+    const lb = e.target.closest && e.target.closest('label');
+    if (lb && lb.querySelector('input[data-act-change="receipt"]')) lsSet(PICK_MARK, String(Date.now()));
+  }, true);
+  // вернулись в приложение и что-то нажимаем — значит, перезапуска не было
+  document.addEventListener('pointerdown', () => { const t = +lsGet(PICK_MARK); if (t && Date.now() - t > 1500) lsSet(PICK_MARK, null); }, true);
+  if (scanCrashNote) setTimeout(() => toast('Телефон перезапустил приложение во время чека: подробности в «Покупках»', 'err'), 1200);
+
+  // ---------- Меню недели: перетаскивание блюд пальцем (за точки слева от названия) ----------
+  // Работает и на телефоне: обычное перетаскивание браузера на iPhone ненадёжно, поэтому ведём палец сами.
+  async function moveDish(src, dst) {
+    if (src.date === dst.date && src.slot === dst.slot && (dst.idx == null || dst.idx === src.j || dst.idx === src.j + 1)) return;
+    const from = menuDay(src.date), list = [...(from[src.slot] || [])];
+    const [dish] = list.splice(src.j, 1);
+    if (!dish) return;
+    const same = src.date === dst.date;
+    const base = same ? { ...from, [src.slot]: list } : menuDay(dst.date);
+    const target = [...(base[dst.slot] || [])];
+    let at = dst.idx == null ? target.length : dst.idx;
+    if (same && src.slot === dst.slot && at > src.j) at--; // строка уже вынута — индекс сдвинулся
+    target.splice(Math.min(at, target.length), 0, dish);
+    if (same) await Store.save('menu', { ...base, [dst.slot]: target });
+    else await Store.saveMany('menu', [{ ...from, [src.slot]: list }, { ...base, [dst.slot]: target }]);
+    const sl = SLOTS.find((s) => s[0] === dst.slot);
+    if (!same || src.slot !== dst.slot) toast(`«${dishTitle(dish)}» → ${WD[(U.parseDate(dst.date).getDay() + 6) % 7]}, ${sl ? sl[1].toLowerCase() : ''}`);
+  }
+  let drag = null;
+  function dropTarget(x, y) {
+    const el = document.elementFromPoint(x, y);
+    const slot = el && el.closest('.slot[data-date]');
+    if (!slot) return null;
+    // куда именно в ячейке: перед блюдом, над которым палец, иначе в конец
+    let idx = null;
+    for (const d of slot.querySelectorAll('.dish[data-j]')) {
+      const r = d.getBoundingClientRect();
+      if (y >= r.top && y <= r.bottom && x < r.left + r.width / 2) { idx = +d.dataset.j; break; }
+      if (y >= r.top && y <= r.bottom && x >= r.left + r.width / 2) idx = +d.dataset.j + 1;
+    }
+    return { slot, date: slot.dataset.date, slotKey: slot.dataset.slot, idx };
+  }
+  function dragEnd(commit) {
+    if (!drag) return;
+    const d = drag; drag = null;
+    cancelAnimationFrame(d.raf);
+    d.ghost.remove();
+    d.chip.classList.remove('dragging');
+    document.body.classList.remove('dish-dragging');
+    document.querySelectorAll('.slot.drop-over').forEach((s) => s.classList.remove('drop-over'));
+    if (commit && d.over) moveDish(d.src, { date: d.over.date, slot: d.over.slotKey, idx: d.over.idx }).catch(fail);
+  }
+  document.addEventListener('pointerdown', (e) => {
+    const g = e.target.closest && e.target.closest('[data-grip]');
+    if (!g || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    e.preventDefault();
+    const chip = g.closest('.dish'), r = chip.getBoundingClientRect();
+    const ghost = chip.cloneNode(true);
+    ghost.classList.add('dish-ghost');
+    Object.assign(ghost.style, { width: r.width + 'px', left: r.left + 'px', top: r.top + 'px' });
+    document.body.appendChild(ghost);
+    chip.classList.add('dragging');
+    document.body.classList.add('dish-dragging');
+    drag = { src: { date: g.dataset.date, slot: g.dataset.slot, j: +g.dataset.j }, chip, ghost, dx: e.clientX - r.left, dy: e.clientY - r.top, x: e.clientX, y: e.clientY, over: null, id: e.pointerId };
+    try { g.setPointerCapture(e.pointerId); } catch (err) { /* не страшно */ }
+    // у края экрана список прокручивается сам
+    const tick = () => {
+      if (!drag) return;
+      const edge = 70, h = window.innerHeight;
+      const v = drag.y < edge ? -(edge - drag.y) / 4 : drag.y > h - edge ? (drag.y - (h - edge)) / 4 : 0;
+      if (v) { window.scrollBy(0, v); updateOver(); }
+      drag.raf = requestAnimationFrame(tick);
+    };
+    drag.raf = requestAnimationFrame(tick);
+  });
+  function updateOver() {
+    if (!drag) return;
+    drag.ghost.style.left = drag.x - drag.dx + 'px';
+    drag.ghost.style.top = drag.y - drag.dy + 'px';
+    const t = dropTarget(drag.x, drag.y);
+    document.querySelectorAll('.slot.drop-over').forEach((s) => { if (!t || s !== t.slot) s.classList.remove('drop-over'); });
+    if (t) t.slot.classList.add('drop-over');
+    drag.over = t;
+  }
+  document.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    e.preventDefault();
+    drag.x = e.clientX; drag.y = e.clientY;
+    updateOver();
+  }, { passive: false });
+  document.addEventListener('pointerup', (e) => { if (drag && e.pointerId === drag.id) dragEnd(true); });
+  document.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) dragEnd(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drag) dragEnd(false); });
 
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
   Store.onChange(() => { if (!needLogin) { render.keepScroll = true; render(); setTimeout(fixRecipeKeys, 0); setTimeout(autoSeedSteps, 0); } });

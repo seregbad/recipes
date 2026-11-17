@@ -11,7 +11,8 @@
   const CACHE = 'kuhnya-ocr-v1';
 
   let ready = null, det = null, rec = null, dict = null;
-  const opts = { wavy: true }; // для сравнения на проверочных фото
+  // wavy — распрямлять изогнутые строки; lowMem — экономный режим для телефонов, которым не хватило памяти
+  const opts = { wavy: true, lowMem: false };
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
@@ -91,6 +92,7 @@
     const tc = t.getContext('2d', { willReadFrequently: true });
     tc.fillStyle = '#fff'; tc.fillRect(0, 0, W, H); tc.drawImage(canvas, 0, 0);
     const d = tc.getImageData(0, 0, W, H).data, n = W * H, f = new Float32Array(3 * n);
+    t.width = t.height = 0;
     const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
     for (let i = 0; i < n; i++) for (let ch = 0; ch < 3; ch++) f[ch * n + i] = (d[i * 4 + ch] / 255 - mean[ch]) / std[ch];
     const out = await det.run({ [det.inputNames[0]]: new window.ort.Tensor('float32', f, [1, 3, H, W]) });
@@ -220,9 +222,32 @@
   // Возвращает { lines: [{ y, parts: [{ x1, x2, text, conf }] }], medH, conf }.
   const medianH = (boxes) => { const hs = boxes.map((b) => (b.curve ? b.curve.h : b.y2 - b.y1)).sort((a, b) => a - b); return hs.length ? hs[hs.length >> 1] : 0; };
   // только найти текст (быстро): нужно, чтобы подобрать масштаб до чтения
+  // Длинный чек ищем полосами: детектору на всю картинку разом нужно несколько сотен МБ памяти,
+  // и iPhone в такой момент перезапускает приложение. Полосы перекрываются, чтобы строка на стыке не потерялась:
+  // каждая строка достаётся той полосе, где лежит её середина.
+  async function detectTiled(canvas) {
+    const STRIP = opts.lowMem ? 768 : 1280, OV = 192;
+    if (canvas.height <= STRIP + OV / 2) return detect(canvas);
+    const all = [];
+    for (let y = 0; y < canvas.height; y += STRIP - OV) {
+      const h = Math.min(STRIP, canvas.height - y), last = y + h >= canvas.height;
+      const t = document.createElement('canvas'); t.width = canvas.width; t.height = h;
+      t.getContext('2d').drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+      const lo = y === 0 ? -Infinity : y + OV / 2, hi = last ? Infinity : y + h - OV / 2;
+      for (const b of await detect(t)) {
+        const box = { ...b, y1: b.y1 + y, y2: b.y2 + y };
+        if (b.curve) { box.curve = { ...b.curve, cy: b.curve.cy.map((v) => v + y) }; box.my = b.my + y; }
+        const c = box.my != null ? box.my : (box.y1 + box.y2) / 2;
+        if (c >= lo && c < hi) all.push(box);
+      }
+      t.width = t.height = 0; // Safari освобождает память холста только так
+      if (last) break;
+    }
+    return all;
+  }
   async function find(canvas) {
     await load();
-    const boxes = (await detect(canvas)).filter((b) => b.x2 - b.x1 >= 6 && b.y2 - b.y1 >= 6);
+    const boxes = (await detectTiled(canvas)).filter((b) => b.x2 - b.x1 >= 6 && b.y2 - b.y1 >= 6);
     return { boxes, medH: medianH(boxes), skew: skewOf(boxes) };
   }
   async function read(canvas, onProgress, found) {

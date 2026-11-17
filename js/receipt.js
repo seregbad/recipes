@@ -89,7 +89,9 @@
     for (const [side, crop] of tries) {
       const c = toCanvas(img, side, crop);
       const d = c.getContext('2d').getImageData(0, 0, c.width, c.height);
-      const code = window.jsQR(d.data, c.width, c.height, { inversionAttempts: 'attemptBoth' });
+      const w = c.width, h = c.height;
+      c.width = c.height = 0; // память холста на iPhone освобождается только так
+      const code = window.jsQR(d.data, w, h, { inversionAttempts: 'attemptBoth' });
       if (code) { const q = parseQR(code.data); if (q) return q; }
     }
     return null;
@@ -336,12 +338,18 @@
     ctx.drawImage(c, 0, 0, o.width, o.height);
     return o;
   }
-  const MAX_PX = 9e6; // больше — телефону тяжело
-  const fitScale = (c, k) => Math.max(0.15, Math.min(k, 3.5, Math.sqrt(MAX_PX / (c.width * c.height))));
+  // Память: iPhone перезапускает приложение, если странице нужно слишком много. Поэтому на iPhone картинки меньше,
+  // а если распознавание уже однажды прервалось — ещё меньше (экономный режим).
+  const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const lowMem = () => { try { return localStorage.getItem('kuhnya-ocr-lowmem') === '1'; } catch (e) { return false; } };
+  const maxPx = () => (lowMem() ? 3.5e6 : IOS ? 6e6 : 9e6);
+  const maxSide = () => (lowMem() ? 2800 : IOS ? 3400 : 4200);
+  const fitScale = (c, k) => Math.max(0.15, Math.min(k, 3.5, Math.sqrt(maxPx() / (c.width * c.height))));
+  const free = (...cs) => cs.forEach((c) => { if (c && c.getContext && c.width) { c.width = 0; c.height = 0; } });
   // Найти чек, выровнять, привести к масштабу, удобному для сети (ширина текста ~800 px).
   function prepareNN(img) {
     const box = textBox(img);
-    let src = toCanvas(img, 4200, box ? {
+    let src = toCanvas(img, maxSide(), box ? {
       x: Math.max(0, box.x - box.w * 0.1), y: Math.max(0, box.y - box.h * 0.03),
       w: Math.min(img.width - Math.max(0, box.x - box.w * 0.1), box.w * 1.2), h: Math.min(img.height - Math.max(0, box.y - box.h * 0.03), box.h * 1.06),
     } : undefined);
@@ -773,6 +781,7 @@
   async function scanNN(imgs, onProgress) {
     const say = (stage, p) => onProgress && onProgress({ stage, p });
     await window.OCR.load((p) => say('load', p));
+    if (window.OCR.opts) window.OCR.opts.lowMem = lowMem() || IOS;
     const pages = [], preps = [];
     let conf = 0, textH = Infinity;
     for (const [n, img] of imgs.entries()) {
@@ -785,17 +794,22 @@
       let canvas = prep.canvas, scale = prep.scale, found = await window.OCR.find(canvas);
       // наклон: сеть сама показывает, под каким углом идут строки, — выравниваем точно
       if (Math.abs(found.skew) >= 0.4 && Math.abs(found.skew) <= 40) {
+        const old = prep.src;
         prep.src = rotate(prep.src, -found.skew, '#bbb');
+        if (old !== prep.src) free(old);
         prep.angle = found.skew;
         scale = fitScale(prep.src, scale);
+        free(canvas);
         canvas = scaleCanvas(prep.src, scale);
         found = await window.OCR.find(canvas);
       }
       if (found.medH && (found.medH < 31 || found.medH > 44)) {
         const k = fitScale(prep.src, (scale * 37) / found.medH);
-        if (Math.abs(k / scale - 1) > 0.1) { scale = k; canvas = scaleCanvas(prep.src, k); found = null; }
+        if (Math.abs(k / scale - 1) > 0.1) { scale = k; free(canvas); canvas = scaleCanvas(prep.src, k); found = null; }
       }
+      prep.canvas = null;
       const r = await window.OCR.read(canvas, progress, found);
+      free(canvas);
       pages.push(r.lines.map((L) => L.parts.map((b) => b.text).join(' ')));
       conf += r.conf;
       if (r.medH) textH = Math.min(textH, r.medH / 1.6 / scale);
@@ -849,6 +863,9 @@
     if (!res) res = await scanTess(imgs, qr, onProgress);
     // QR не нашёлся на исходном фото — пробуем на обрезанном и выровненном
     if (!qr) for (const p of res.preps) { qr = await findQR(p.src).catch(() => null); if (qr) break; }
+    // большие картинки больше не нужны — сразу отдаём память
+    free(...res.preps.map((p) => p.src).filter((c) => c && c.getContext));
+    imgs.forEach((im) => { try { if (im.close) im.close(); } catch (e) { /* не ImageBitmap */ } });
 
     const parsed = res.parsed, target = qr ? qr.sum : parsed.total;
     const sum = parsed.items.reduce((s, i) => s + i.total, 0);

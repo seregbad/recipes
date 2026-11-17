@@ -1,7 +1,7 @@
 // Сервис-воркер: приложение открывается и без интернета.
 // Свои файлы — «сначала сеть, потом кэш» (обновления видны сразу, офлайн берётся сохранённая копия).
 // После изменения файлов можно поднять версию, чтобы старый кэш удалился.
-const CACHE = 'kuhnya-v14';
+const CACHE = 'kuhnya-v15';
 const SHELL = [
   './', './index.html', './desktop.html', './manifest.webmanifest', './manifest-desktop.webmanifest', './css/styles.css', './css/desktop.css',
   './js/config.js', './js/ingredients.js', './js/seed.js', './js/seed-steps.js', './js/utils.js', './js/store.js', './js/ocr.js', './js/receipt.js', './js/recipe-extract.js', './js/recipe-import.js', './js/measures.js', './js/app.js', './js/desktop.js',

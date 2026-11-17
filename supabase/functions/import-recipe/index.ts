@@ -43,7 +43,10 @@ Deno.serve(async (req) => {
     const { document } = parseHTML(html);
     // deno-lint-ignore no-explicit-any
     const r: any = extractRecipe(document);
-    return json({ ...r, source: target.toString() });
+    // на странице несколько рецептов или это раздел со ссылками — отдаём список, чтобы выбрать в приложении
+    let many: any = { recipes: [], links: [] };
+    try { many = extractMany(document, res.url || target.toString()); } catch (_) { /* список не нужен для одиночного рецепта */ }
+    return json({ ...r, source: target.toString(), many: many.recipes, links: many.links });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
@@ -340,5 +343,141 @@ function extractRecipe(doc) {
     .trim();
   res.image = res.image || meta('og:image');
   return res;
+}
+
+// Страница, где рецептов много («10 салатов на Новый год», подборка, раздел сайта).
+// Возвращает { recipes: [полные рецепты], links: [{ title, url, image }] } — из чего выбирать.
+function extractMany(doc, base) {
+  const one = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const up = (el) => String(el.tagName || '').toUpperCase();
+  const NOISE = 'header, footer, nav, aside, [class*="comment" i], [class*="advert" i], [class*="banner" i], [class*="social" i], [class*="share" i], [class*="menu" i], [class*="breadcrumb" i], [class*="pagination" i]';
+  const inNoise = (el) => { try { return !!el.closest(NOISE); } catch (e) { return false; } };
+  const HEADS = /^(ингредиенты|состав|продукты|приготовление|способ приготовления|как приготовить|шаги|советы|комментарии|похожие рецепты|читайте также|содержание|оглавление)/i;
+  const cleanTitle = (t) => one(t).replace(/^(\d{1,2}[.)]|№\s*\d+[.:]?|рецепт\s*(№\s*)?\d+[.:]?)\s*/i, '').replace(/[.:]$/, '').trim();
+  const out = { recipes: [], links: [] };
+  const seenTitles = new Set();
+  const addRecipe = (r, title) => {
+    const t = cleanTitle(title || r.title);
+    const key = t.toLowerCase();
+    if (!t || seenTitles.has(key)) return;
+    seenTitles.add(key);
+    out.recipes.push({ ...r, title: t });
+  };
+
+  // 1. Несколько рецептов в разметке JSON-LD
+  const ldRecipes = [], ldLinks = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    const t = node['@type'], is = (x) => t === x || (Array.isArray(t) && t.includes(x));
+    if (is('Recipe')) { ldRecipes.push(node); return; }
+    if (is('ItemList')) {
+      for (const it of [].concat(node.itemListElement || [])) {
+        const x = it && it.item && typeof it.item === 'object' ? it.item : it;
+        if (!x || typeof x !== 'object') continue;
+        if ((x['@type'] === 'Recipe' || (Array.isArray(x['@type']) && x['@type'].includes('Recipe'))) && (x.recipeIngredient || x.recipeInstructions)) { ldRecipes.push(x); continue; }
+        const url = x.url || (typeof it.item === 'string' ? it.item : '') || x['@id'];
+        if (url) ldLinks.push({ title: one(x.name || it.name || ''), url: String(url), image: typeof x.image === 'string' ? x.image : (x.image && x.image.url) || '' });
+      }
+    }
+    ['@graph', 'mainEntity', 'mainEntityOfPage', 'hasPart', 'itemListElement'].forEach((k) => { if (node[k] && typeof node[k] === 'object' && !is('ItemList')) walk(node[k]); });
+  };
+  for (const s of doc.querySelectorAll('script[type="application/ld+json"]')) {
+    const raw = s.textContent || '';
+    try { walk(JSON.parse(raw)); } catch (e) { try { walk(JSON.parse(raw.replace(/[\u0000-\u001f]+/g, ' ').replace(/,\s*([}\]])/g, '$1'))); } catch (e2) { /* битая разметка */ } }
+  }
+  if (ldRecipes.length >= 2) {
+    for (const node of ldRecipes) {
+      // разбираем каждый рецепт тем же способом, что и одиночный: подсовываем его разметку в пустой блок
+      const box = doc.createElement('div'), sc = doc.createElement('script');
+      sc.setAttribute('type', 'application/ld+json'); sc.textContent = JSON.stringify(node);
+      box.appendChild(sc);
+      const r = extractRecipe(box);
+      if (r.ingredients.length >= 2 || r.steps.length >= 2) addRecipe(r);
+    }
+  }
+
+  // 2. Статья-подборка: рецепты идут друг за другом под заголовками h2/h3
+  if (out.recipes.length < 2) {
+    let best = [];
+    for (const tag of ['H2', 'H3', 'H4']) {
+      const heads = [...doc.querySelectorAll(tag)].filter((h) => !inNoise(h) && one(h.textContent).length >= 3 && one(h.textContent).length <= 120 && !HEADS.test(one(h.textContent)));
+      if (heads.length < 2) continue;
+      const found = [];
+      for (const h of heads) {
+        // от заголовка (или его обёртки) берём соседние блоки до следующего заголовка того же уровня
+        let cur = h;
+        while (cur && !cur.nextElementSibling && cur.parentElement && cur.parentElement !== doc.body) cur = cur.parentElement;
+        const box = doc.createElement('div');
+        let s = cur && cur.nextElementSibling;
+        for (let i = 0; s && i < 80; i++, s = s.nextElementSibling) {
+          if (up(s) === tag || (s.querySelector && s.querySelector(tag))) break;
+          box.appendChild(s.cloneNode(true));
+        }
+        const r = extractRecipe(box);
+        const withQty = r.ingredients.filter((x) => /\d|по вкусу|щепотк|пучок|зубчик/i.test(x)).length;
+        if (withQty >= 2 && r.steps.length >= 1) {
+          const im = box.querySelector('img');
+          let image = im ? im.getAttribute('data-src') || im.getAttribute('data-lazy-src') || im.getAttribute('src') || '' : '';
+          try { image = image && !/^data:/.test(image) ? new URL(image, base).toString() : ''; } catch (e) { image = ''; }
+          found.push({ r: { ...r, image }, title: one(h.textContent) });
+        }
+      }
+      if (found.length > best.length) best = found;
+    }
+    if (best.length >= 2) best.forEach(({ r, title }) => addRecipe(r, title));
+  }
+
+  // 3. Раздел сайта: карточки-ссылки на отдельные рецепты
+  let host = '', basePath = '';
+  try { const b = new URL(base); host = b.hostname; basePath = b.pathname.replace(/\/$/, ''); } catch (e) { /* без адреса страницы */ }
+  const links = [];
+  const sameSite = (u) => { try { return new URL(u, base).hostname.replace(/^www\./, '') === host.replace(/^www\./, ''); } catch (e) { return false; } };
+  // в разметке бывают и чужие ссылки (меню сети сайтов) — берём только свои; название без подписи берём из ссылки на странице
+  const ownLd = ldLinks.filter((l) => sameSite(l.url) && !/\/\/[^/]+\/?$/.test(l.url));
+  if (ownLd.length >= 3) {
+    const textByUrl = new Map();
+    for (const a of doc.querySelectorAll('a[href]')) {
+      try { const k = new URL(a.getAttribute('href'), base).toString(), t = one(a.getAttribute('title') || a.textContent); if (t.length >= 4 && !textByUrl.has(k)) textByUrl.set(k, t); } catch (e) { /* битая ссылка */ }
+    }
+    ownLd.forEach((l) => { let k = l.url; try { k = new URL(l.url, base).toString(); } catch (e) { /* как есть */ } links.push({ ...l, title: l.title || textByUrl.get(k) || '' }); });
+  } else if (host) {
+    const groups = new Map();
+    for (const a of doc.querySelectorAll('a[href]')) {
+      if (inNoise(a)) continue;
+      let u;
+      try { u = new URL(a.getAttribute('href'), base); } catch (e) { continue; }
+      if (u.hostname !== host || u.hash && u.pathname === basePath || u.pathname.replace(/\/$/, '') === basePath || u.pathname.split('/').filter(Boolean).length < 1) continue;
+      if (/\/(tag|tags|category|categories|author|page|search|login|user|profile)s?\//i.test(u.pathname) || /\.(jpg|png|pdf)$/i.test(u.pathname)) continue;
+      const img = a.querySelector('img');
+      const title = one(a.getAttribute('title') || a.textContent || (img && img.getAttribute('alt')) || '');
+      if (title.length < 6 || title.length > 120 || !/[а-яёa-z]{3,}/i.test(title)) continue;
+      // карточки одного списка устроены одинаково: группируем по классам ссылки и двух её родителей
+      const p1 = a.parentElement, p2 = p1 && p1.parentElement;
+      const sig = [a, p1, p2].map((e) => (e ? up(e) + '.' + String(e.getAttribute('class') || '').split(/\s+/)[0] : '')).join('>');
+      if (!groups.has(sig)) groups.set(sig, []);
+      const card = (p2 && p2.querySelector('img')) || img;
+      groups.get(sig).push({ title, url: u.origin + u.pathname + u.search, image: card ? card.getAttribute('data-src') || card.getAttribute('src') || '' : '' });
+    }
+    let bestG = [];
+    for (const g of groups.values()) {
+      const uniq = [...new Map(g.map((x) => [x.url, x])).values()];
+      if (uniq.length > bestG.length) bestG = uniq;
+    }
+    if (bestG.length >= 4) bestG.forEach((l) => links.push(l));
+  }
+  const seenUrl = new Set();
+  for (const l of links) {
+    let url = l.url;
+    try { url = new URL(url, base || undefined).toString(); } catch (e) { continue; }
+    if (seenUrl.has(url) || !/^https?:/.test(url) || !cleanTitle(l.title)) continue;
+    seenUrl.add(url);
+    let image = l.image || '';
+    try { if (image && !/^data:/.test(image)) image = new URL(image, url).toString(); else image = ''; } catch (e) { image = ''; }
+    out.links.push({ title: cleanTitle(l.title), url, image });
+    if (out.links.length >= 60) break;
+  }
+  out.recipes = out.recipes.slice(0, 40);
+  return out;
 }
 // <<< extractRecipe
