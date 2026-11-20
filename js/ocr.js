@@ -12,7 +12,7 @@
 
   let ready = null, det = null, rec = null, dict = null;
   // wavy — распрямлять изогнутые строки; lowMem — экономный режим для телефонов, которым не хватило памяти
-  const opts = { wavy: true, lowMem: false };
+  const opts = { wavy: true, lowMem: 0 };
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
@@ -41,7 +41,7 @@
         if (done) break;
         chunks.push(value); got += value.length;
         clearTimeout(timer); timer = setTimeout(() => ctrl.abort(), 30000);
-        if (onPart && total) onPart(got / total);
+        if (onPart && total) onPart(Math.min(1, got / total)); // сжатая передача: байтов приходит больше, чем в заголовке
       }
       const buf = new Uint8Array(got);
       let o = 0; for (const c of chunks) { buf.set(c, o); o += c.length; }
@@ -77,9 +77,12 @@
       if (dict[dict.length - 1] === '') dict.pop();
       const detBuf = await fetchBuf(url('det.onnx'), (v) => p(0.1 + v * 0.2));
       const recBuf = await fetchBuf(url('rec.onnx'), (v) => p(0.3 + v * 0.5));
-      det = await window.ort.InferenceSession.create(detBuf, { executionProviders: ['wasm'] });
+      // без «запаса» памяти: иначе движок держит память под самую большую картинку и не отдаёт её,
+      // а iPhone при нехватке памяти перезапускает приложение
+      const so = { executionProviders: ['wasm'], enableCpuMemArena: false, enableMemPattern: false, executionMode: 'sequential', graphOptimizationLevel: 'all' };
+      det = await window.ort.InferenceSession.create(new Uint8Array(detBuf), so);
       p(0.9);
-      rec = await window.ort.InferenceSession.create(recBuf, { executionProviders: ['wasm'] });
+      rec = await window.ort.InferenceSession.create(new Uint8Array(recBuf), so);
       p(1);
     })().catch((e) => { ready = null; throw new Error('Не удалось загрузить распознавание (' + (e.message || e) + '). Нужен интернет при первом запуске'); });
     return ready;
@@ -226,7 +229,7 @@
   // и iPhone в такой момент перезапускает приложение. Полосы перекрываются, чтобы строка на стыке не потерялась:
   // каждая строка достаётся той полосе, где лежит её середина.
   async function detectTiled(canvas) {
-    const STRIP = opts.lowMem ? 768 : 1280, OV = 192;
+    const STRIP = [1280, 768, 640, 512][Math.min(3, +opts.lowMem || 0)], OV = 192;
     if (canvas.height <= STRIP + OV / 2) return detect(canvas);
     const all = [];
     for (let y = 0; y < canvas.height; y += STRIP - OV) {

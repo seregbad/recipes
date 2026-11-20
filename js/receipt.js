@@ -28,15 +28,27 @@
   }
 
   // ---------- Картинки ----------
-  async function loadImage(file) {
-    try { return await createImageBitmap(file); } catch (e) {
-      return await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('Не получилось открыть фото'));
-        img.src = URL.createObjectURL(file);
+  // maxSide — сразу уменьшить большое фото: снимок нового iPhone (24–48 Мп) в памяти занимает 100–200 МБ,
+  // и держать его целиком, пока работает распознавание, телефону не по силам
+  async function loadImage(file, maxSide) {
+    let img;
+    try { img = await createImageBitmap(file); } catch (e) {
+      img = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => reject(new Error('Не получилось открыть фото'));
+        im.src = URL.createObjectURL(file);
       });
     }
+    if (!maxSide || Math.max(img.width, img.height) <= maxSide) return img;
+    const k = maxSide / Math.max(img.width, img.height);
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    if (img.close) img.close(); else if (img.src) { URL.revokeObjectURL(img.src); img.src = ''; }
+    return c;
   }
   function toCanvas(img, maxSide, crop) {
     const sx = crop ? crop.x : 0, sy = crop ? crop.y : 0;
@@ -341,9 +353,10 @@
   // Память: iPhone перезапускает приложение, если странице нужно слишком много. Поэтому на iPhone картинки меньше,
   // а если распознавание уже однажды прервалось — ещё меньше (экономный режим).
   const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const lowMem = () => { try { return localStorage.getItem('kuhnya-ocr-lowmem') === '1'; } catch (e) { return false; } };
-  const maxPx = () => (lowMem() ? 3.5e6 : IOS ? 6e6 : 9e6);
-  const maxSide = () => (lowMem() ? 2800 : IOS ? 3400 : 4200);
+  // ступень экономии: 0 — обычный режим; после каждого вылета на 1 больше (до 3)
+  const lowMem = () => { try { return Math.min(3, +localStorage.getItem('kuhnya-ocr-lowmem') || 0); } catch (e) { return 0; } };
+  const maxPx = () => [IOS ? 6e6 : 9e6, 3.5e6, 2.5e6, 1.8e6][lowMem()];
+  const maxSide = () => [IOS ? 3400 : 4200, 2800, 2300, 1900][lowMem()];
   const fitScale = (c, k) => Math.max(0.15, Math.min(k, 3.5, Math.sqrt(maxPx() / (c.width * c.height))));
   const free = (...cs) => cs.forEach((c) => { if (c && c.getContext && c.width) { c.width = 0; c.height = 0; } });
   // Найти чек, выровнять, привести к масштабу, удобному для сети (ширина текста ~800 px).
@@ -781,7 +794,7 @@
   async function scanNN(imgs, onProgress) {
     const say = (stage, p) => onProgress && onProgress({ stage, p });
     await window.OCR.load((p) => say('load', p));
-    if (window.OCR.opts) window.OCR.opts.lowMem = lowMem() || IOS;
+    if (window.OCR.opts) window.OCR.opts.lowMem = lowMem() || (IOS ? 1 : 0);
     const pages = [], preps = [];
     let conf = 0, textH = Infinity;
     for (const [n, img] of imgs.entries()) {
@@ -846,8 +859,13 @@
   }
 
   async function scan(files, onProgress) {
+    // Сначала запускаем нейросеть, и только потом открываем фото: запуск сам требует много памяти,
+    // и если в этот момент в памяти ещё и большое фото, iPhone перезапускает приложение.
+    if (window.OCR) {
+      try { await window.OCR.load((p) => onProgress && onProgress({ stage: 'load', p })); } catch (e) { /* ниже будет запасной способ */ }
+    }
     const imgs = [];
-    for (const f of files) imgs.push(await loadImage(f));
+    for (const f of files) imgs.push(await loadImage(f, maxSide()));
     onProgress && onProgress({ stage: 'qr', p: 0 });
     let qr = null;
     for (const img of imgs) { qr = await findQR(img).catch(() => null); if (qr) break; }
@@ -865,7 +883,7 @@
     if (!qr) for (const p of res.preps) { qr = await findQR(p.src).catch(() => null); if (qr) break; }
     // большие картинки больше не нужны — сразу отдаём память
     free(...res.preps.map((p) => p.src).filter((c) => c && c.getContext));
-    imgs.forEach((im) => { try { if (im.close) im.close(); } catch (e) { /* не ImageBitmap */ } });
+    imgs.forEach((im) => { try { if (im.close) im.close(); else free(im); } catch (e) { /* не ImageBitmap */ } });
 
     const parsed = res.parsed, target = qr ? qr.sum : parsed.total;
     const sum = parsed.items.reduce((s, i) => s + i.total, 0);
