@@ -944,7 +944,8 @@
     return `
       <div class="page-head"><h1>Покупки</h1>
         <label class="btn">${icon('camera')}<span>Чек</span><input type="file" accept="image/*" multiple data-act-change="receipt" hidden></label></div>
-      ${scanCrashNote ? `<div class="card warn-card"><p class="small">${esc(scanCrashNote)}</p><button type="button" class="btn small" data-act="scan-note-ok">Понятно</button></div>` : ''}
+      ${scanCrashNote ? `<div class="card warn-card"><p class="small">${esc(scanCrashNote)}${fnsToken() ? '' : ' Надёжнее всего — токен ФНС в Настройках: тогда чек с QR-кодом берётся из базы налоговой, и тяжёлое распознавание не запускается вовсе.'}</p>
+        <div class="row wrap"><button type="button" class="btn small" data-act="scan-note-ok">Понятно</button>${scanCrashReport ? '<button type="button" class="btn small" data-act="scan-report-copy">Скопировать отчёт для разработчика</button>' : ''}</div></div>` : ''}
       ${rcDraftNote()}
       <div class="seg">
         <button class="${ui.shopTab === 'todo' ? 'on' : ''}" data-act="set" data-k="shopTab" data-v="todo">Купить · ${todo.length}</button>
@@ -1189,18 +1190,33 @@
   // Если iPhone перезапустил приложение посреди распознавания (не хватило памяти) или пока была открыта камера,
   // после запуска объясняем, что случилось, и включаем экономный режим распознавания.
   const SCAN_MARK = 'kuhnya-scan-pending', PICK_MARK = 'kuhnya-pick-pending';
+  const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* без памяти */ } };
-  let scanCrashNote = '';
+  let scanCrashNote = '', scanCrashReport = '';
   (function checkScanCrash() {
     const fresh = (k) => { const t = +lsGet(k); return t && Date.now() - t < 15 * 60 * 1000; };
     if (fresh(SCAN_MARK)) {
+      // журнал шагов: на каком шаге телефон закрыл приложение
+      let steps = [];
+      try { steps = JSON.parse(lsGet('kuhnya-scan-trace') || '[]'); } catch (e) { steps = []; }
+      const last = steps.length ? steps[steps.length - 1][1] : 'неизвестно';
+      scanCrashReport = [`Вылет при чтении чека, ${new Date().toLocaleString('ru-RU')}`, navigator.userAgent,
+        `экран ${screen.width}×${screen.height}, ступень ${lsGet('kuhnya-ocr-lowmem') || 0}, способ ${lsGet('kuhnya-ocr-engine') || 'нейросеть'}`,
+        ...steps.map(([t, s]) => `${(t / 1000).toFixed(1)} с — ${s}`)].join('\n');
+      lsSet('kuhnya-last-crash', scanCrashReport);
       // после каждого вылета — следующая ступень экономии (меньше фото и куски для нейросети)
       const lvl = Math.min(3, (+lsGet('kuhnya-ocr-lowmem') || 0) + 1);
       lsSet('kuhnya-ocr-lowmem', String(lvl));
-      scanCrashNote = lvl < 3
-        ? `Распознавание чека прервалось: телефону не хватило памяти, и он перезапустил приложение. Включён экономный режим (ступень ${lvl} из 3), попробуйте ещё раз. Помогает закрыть другие приложения, а длинный чек снять двумя фото.`
-        : 'Распознавание снова прервалось из-за памяти. Включена самая экономная ступень. Перезагрузите телефон (выключить и включить) и попробуйте ещё раз; длинный чек снимайте двумя-тремя фото по частям.';
+      // нейросеть вылетает дважды — на этом телефоне читаем облегчённым способом (хуже, зато без вылетов)
+      const nnStep = /движок|поиск текста|чтение строк|подготовка|чек вырезан|выравниваю/.test(last);
+      const nnCrashes = (+lsGet('kuhnya-nn-crashes') || 0) + (nnStep ? 1 : 0);
+      lsSet('kuhnya-nn-crashes', String(nnCrashes));
+      const tess = nnCrashes >= 2 && lsGet('kuhnya-ocr-engine') !== 'tess';
+      if (tess) lsSet('kuhnya-ocr-engine', 'tess');
+      scanCrashNote = `Распознавание чека прервалось на шаге «${last}»: телефон перезапустил приложение (обычно из-за нехватки памяти). ` +
+        (tess ? 'Нейросеть на этом телефоне вылетает повторно, поэтому дальше чеки читаются облегчённым способом: он хуже читает названия, но не вылетает. Вернуть нейросеть можно в Настройках.'
+          : `Включён экономный режим (ступень ${lvl} из 3), попробуйте ещё раз.`);
     } else if (fresh(PICK_MARK)) {
       scanCrashNote = 'Пока была открыта камера, телефон перезапустил приложение (так iPhone иногда освобождает память). Надёжнее сфотографировать чек обычной камерой, а потом в «Чек» выбрать фото из галереи.';
     }
@@ -1226,6 +1242,28 @@
       <p class="muted small">Всё распознаётся прямо на устройстве, фото никуда не отправляется. В первый раз загрузится модель распознавания (около 20 МБ, лучше по Wi-Fi), дальше она берётся из памяти и работает без интернета. Обычно 10–30 секунд.</p>
     </div>`);
     try {
+      // Есть токен ФНС: сначала только QR-код (это быстро и почти не требует памяти) и чек из базы налоговой.
+      // Тяжёлое распознавание нейросетью запускается, только если так не получилось.
+      let fnsFail = '';
+      if (fnsToken()) {
+        setStage('Ищу QR-код…', 0.05);
+        const qr = await Receipt.quickQR(files).catch(() => null);
+        if (id !== receiptScanId || !$('#modal').open) return;
+        if (qr) {
+          setStage('Беру чек из базы ФНС…', 0.5);
+          const d = { qr, qrraw: qr.raw, items: [], info: {}, text: '' };
+          await rcAskFns(d);
+          if (id !== receiptScanId || !$('#modal').open) return;
+          if (d.fns) {
+            receiptDraft = d;
+            rcKeepDraft();
+            openModal(receiptForm(receiptDraft));
+            return;
+          }
+          fnsFail = d.fnsError || 'нет ответа';
+          setStage(`ФНС не дала чек (${fnsFail}), распознаю фото…`, 0.1);
+        }
+      }
       const res = await Receipt.scan(files, ({ stage, p }) => {
         if (stage === 'qr') setStage('Ищу QR-код…', 0.05);
         else if (stage === 'prep') setStage('Готовлю фото…', 0.1);
@@ -1233,6 +1271,7 @@
         else if (stage === 'ocr') setStage(`Читаю чек… ${Math.round(p * 100)}%`, 0.3 + p * 0.7);
         else if (stage === 'ocr2') setStage(`Сумма не сошлась, перепроверяю другим способом… ${Math.round(p * 100)}%`, 0.8 + p * 0.2);
       });
+      if (res.info && res.info.engine === 'nn') lsSet('kuhnya-nn-crashes', null); // нейросеть отработала — счётчик вылетов с нуля
       if (id !== receiptScanId || !$('#modal').open) return; // окно закрыли — результат не нужен
       const cat = catalog(), words = rcVocab();
       receiptDraft = {
@@ -1257,12 +1296,22 @@
       receiptDraft.qrraw = res.qrraw;
       rcKeepDraft();
       // есть токен и реквизиты — берём точные данные из ФНС
-      if (fnsToken() && res.qrraw) {
+      if (fnsFail) receiptDraft.fnsError = fnsFail; // уже спрашивали — второй раз не тратим запрос
+      else if (fnsToken() && res.qrraw) {
         setStage('Сверяю с базой ФНС…', 0.98);
         await rcAskFns(receiptDraft);
         if (id !== receiptScanId || !$('#modal').open) return;
       }
       rcKeepDraft();
+      // iPhone: память, занятую нейросетью, браузер не отдаёт до перезагрузки страницы, и приложение могло вылететь
+      // уже на экране проверки. Черновик сохранён — перезапускаем страницу и сразу открываем проверку чека.
+      if (IS_IOS && res.info && res.info.engine === 'nn' && lsGet(RC_DRAFT_KEY)) {
+        setStage('Готово, открываю проверку…', 1);
+        lsSet('kuhnya-open-draft', '1');
+        lsSet(SCAN_MARK, null);
+        location.reload();
+        return;
+      }
       openModal(receiptForm(receiptDraft));
     } catch (e) {
       if (id === receiptScanId) { closeModal(); fail(e); }
@@ -1365,7 +1414,9 @@
           : 'QR-код не нашёлся: проверьте дату. Сумму считаю по позициям.'}
         ${d.discountApplied ? `<br>${icon('check', 'tiny')} Скидка ${money(d.discountApplied)} ₽ из чека уже разнесена по позициям.` : ''}
         ${d.items.some((i) => i.fixed) ? `<br>${icon('check', 'tiny')} В ${d.items.filter((i) => i.fixed).length} поз. цифра прочиталась неточно — исправлена по проверке «количество × цена = сумма».` : ''}</p>`}
-      ${d.fns ? '' : d.info && d.info.engine === 'tess' ? `<p class="small warn-text">Чек прочитан <b>запасным способом</b> (он заметно хуже): нейросеть на этом устройстве не сработала — ${esc(d.info.nnError || 'причина неизвестна')}. Пришлите снимок этого окна, разберёмся.</p>` : d.info && d.info.engine ? `<p class="muted small">Распознавание: нейросеть${d.info.conf ? `, уверенность ${d.info.conf}%` : ''}.</p>` : ''}
+      ${d.fns ? '' : d.info && d.info.engine === 'tess' ? (/выключена/.test(d.info.nnError || '')
+        ? `<p class="small warn-text">Чек прочитан <b>облегчённым способом</b>: нейросеть на этом телефоне выключена после вылетов, а этот способ хуже читает названия и изогнутые строки. Проверьте позиции. Точнее всего — токен ФНС в Настройках: тогда чек с QR-кодом берётся из базы налоговой.</p>`
+        : `<p class="small warn-text">Чек прочитан <b>запасным способом</b> (он заметно хуже): нейросеть на этом устройстве не сработала — ${esc(d.info.nnError || 'причина неизвестна')}. Пришлите снимок этого окна, разберёмся.</p>`) : d.info && d.info.engine ? `<p class="muted small">Распознавание: нейросеть${d.info.conf ? `, уверенность ${d.info.conf}%` : ''}.</p>` : ''}
       ${!d.fns && d.info && d.info.textH && d.info.textH < 13 ? `<p class="small warn-text">Чек снят мелко (буквы около ${d.info.textH} px), названия могли прочитаться с ошибками. Длинный чек лучше снимать двумя-тремя фото по частям с небольшим перекрытием и выбирать их все сразу — приложение склеит.</p>` : ''}
       <div class="grid2">
         <label>Дата покупки<input type="date" name="date" value="${esc(date)}" max="${U.today()}" required></label>
@@ -2048,6 +2099,9 @@
         <p class="small ${fnsToken() ? 'ok-text' : 'muted'}">${fnsToken() ? `${icon('check', 'tiny')} Токен сохранён. Он хранится в вашей общей базе и виден только вам двоим.` : 'Токен не указан: позиции берутся только из распознавания фото.'}</p>
         ${ocrStatsHtml()}
         <button class="btn" data-act="ocr-bench">${icon('search')}<span>Проверить распознавание на своих чеках</span></button>
+        ${lsGet('kuhnya-ocr-engine') === 'tess' || +lsGet('kuhnya-ocr-lowmem') ? `<p class="small warn-text">На этом телефоне ${lsGet('kuhnya-ocr-engine') === 'tess' ? 'чеки читаются облегчённым способом (нейросеть выключена после вылетов)' : `включён экономный режим, ступень ${lsGet('kuhnya-ocr-lowmem')} из 3`}.</p>
+          <button class="btn" data-act="ocr-engine-nn">Сбросить: снова обычная нейросеть</button>` : ''}
+        ${lsGet('kuhnya-last-crash') ? '<button class="btn" data-act="scan-report-copy">Скопировать отчёт о последнем вылете</button>' : ''}
       </section>`;
   }
 
@@ -2251,6 +2305,17 @@
     },
     'rc-lump': (el) => saveReceipt(el.closest('form'), true),
     'scan-note-ok': () => { scanCrashNote = ''; refresh(); },
+    // отчёт о вылете: что за телефон и на каком шаге остановилось — его можно прислать в чат
+    'scan-report-copy': async () => {
+      const text = scanCrashReport || lsGet('kuhnya-last-crash') || '';
+      if (!text) { toast('Отчёта нет: вылетов не было'); return; }
+      try { await navigator.clipboard.writeText(text); toast('Отчёт скопирован: вставьте его в сообщение'); }
+      catch (e) { openModal(`<div class="form"><div class="form-head"><h2>Отчёт о вылете</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div><p class="small muted">Выделите текст и скопируйте.</p><textarea readonly rows="14">${esc(text)}</textarea></div>`); }
+    },
+    'ocr-engine-nn': () => {
+      lsSet('kuhnya-ocr-engine', null); lsSet('kuhnya-nn-crashes', null); lsSet('kuhnya-ocr-lowmem', null);
+      toast('Нейросеть снова включена'); refresh();
+    },
     'rc-resume': () => { if (receiptDraft) { openModal(receiptForm(receiptDraft)); refresh(); } },
     'rc-drop': async () => {
       if (!(await confirmBox('Отбросить несохранённый чек? Правки в нём пропадут.', 'Отбросить'))) return;
@@ -3175,6 +3240,14 @@
     fixRecipeKeys();
     autoSeedSteps();
     readyHooks.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
+    // чек только что распознан, а страница перезапущена, чтобы освободить память нейросети, — открываем проверку
+    if (lsGet('kuhnya-open-draft')) {
+      lsSet('kuhnya-open-draft', null);
+      if (receiptDraft && !needLogin) {
+        if (route().name !== 'shopping') location.hash = '#/shopping';
+        setTimeout(() => openModal(receiptForm(receiptDraft)), 50);
+      }
+    }
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
   else setTimeout(start, 0);

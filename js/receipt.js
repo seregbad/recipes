@@ -799,7 +799,9 @@
     let conf = 0, textH = Infinity;
     for (const [n, img] of imgs.entries()) {
       say('prep', 0);
+      trace('подготовка фото');
       const prep = prepareNN(img);
+      trace(`чек вырезан: ${prep.src.width}×${prep.src.height}`);
       preps.push(prep);
       const progress = (p) => say('ocr', (n + p) / imgs.length);
       // сначала только ищем текст и смотрим высоту строк: сеть лучше всего читает строки высотой ~36 px,
@@ -807,6 +809,7 @@
       let canvas = prep.canvas, scale = prep.scale, found = await window.OCR.find(canvas);
       // наклон: сеть сама показывает, под каким углом идут строки, — выравниваем точно
       if (Math.abs(found.skew) >= 0.4 && Math.abs(found.skew) <= 40) {
+        trace(`выравниваю наклон ${found.skew}°`);
         const old = prep.src;
         prep.src = rotate(prep.src, -found.skew, '#bbb');
         if (old !== prep.src) free(old);
@@ -858,33 +861,59 @@
     }
   }
 
+  const trace = (s, reset) => { if (window.scanTrace) window.scanTrace(s, reset); };
+  // на этом телефоне нейросеть выключена (после повторных вылетов) — читаем облегчённым способом
+  const nnOff = () => { try { return localStorage.getItem('kuhnya-ocr-engine') === 'tess'; } catch (e) { return false; } };
+  // Быстро: только QR-код (без распознавания текста). Нужен, чтобы взять чек из ФНС, не запуская нейросеть.
+  async function quickQR(files) {
+    trace('QR без распознавания', true);
+    for (const f of files) {
+      const img = await loadImage(f, maxSide());
+      trace(`фото ${img.width}×${img.height}`);
+      const qr = await findQR(img).catch(() => null);
+      try { if (img.close) img.close(); else free(img); } catch (e) { /* не страшно */ }
+      if (qr) { trace('QR найден'); return qr; }
+    }
+    trace('QR не найден');
+    return null;
+  }
   async function scan(files, onProgress) {
+    trace(`начало: ${files.length} фото, ступень экономии ${lowMem()}, ${nnOff() ? 'облегчённый способ' : 'нейросеть'}`, true);
     // Сначала запускаем нейросеть, и только потом открываем фото: запуск сам требует много памяти,
     // и если в этот момент в памяти ещё и большое фото, iPhone перезапускает приложение.
-    if (window.OCR) {
-      try { await window.OCR.load((p) => onProgress && onProgress({ stage: 'load', p })); } catch (e) { /* ниже будет запасной способ */ }
+    const useNN = window.OCR && !nnOff();
+    if (useNN) {
+      try { await window.OCR.load((p) => onProgress && onProgress({ stage: 'load', p })); } catch (e) { trace('движок не загрузился: ' + e.message); }
     }
     const imgs = [];
-    for (const f of files) imgs.push(await loadImage(f, maxSide()));
+    for (const f of files) {
+      trace('открываю фото');
+      imgs.push(await loadImage(f, maxSide()));
+      trace(`фото ${imgs[imgs.length - 1].width}×${imgs[imgs.length - 1].height}`);
+    }
     onProgress && onProgress({ stage: 'qr', p: 0 });
+    trace('ищу QR');
     let qr = null;
     for (const img of imgs) { qr = await findQR(img).catch(() => null); if (qr) break; }
+    trace(qr ? 'QR найден' : 'QR не найден');
     onProgress && onProgress({ stage: 'prep', p: 0 });
 
-    let res = null, nnError = window.OCR ? '' : 'модуль распознавания не подключён';
-    if (window.OCR) {
+    let res = null, nnError = !window.OCR ? 'модуль распознавания не подключён' : nnOff() ? 'нейросеть выключена на этом телефоне после вылетов' : '';
+    if (useNN) {
       try { res = await scanNN(imgs, onProgress); } catch (e) {
         nnError = String((e && e.message) || e).replace(/^Не удалось загрузить распознавание \(|\)\. Нужен интернет при первом запуске$/g, '');
         console.warn('Нейросеть не сработала, читаю чек прежним способом', e);
       }
     }
-    if (!res) res = await scanTess(imgs, qr, onProgress);
+    if (!res) { trace('облегчённый способ (Tesseract)'); res = await scanTess(imgs, qr, onProgress); }
+    trace('разбор текста');
     // QR не нашёлся на исходном фото — пробуем на обрезанном и выровненном
     if (!qr) for (const p of res.preps) { qr = await findQR(p.src).catch(() => null); if (qr) break; }
     // большие картинки больше не нужны — сразу отдаём память
     free(...res.preps.map((p) => p.src).filter((c) => c && c.getContext));
     imgs.forEach((im) => { try { if (im.close) im.close(); else free(im); } catch (e) { /* не ImageBitmap */ } });
 
+    trace(`готово: ${res.parsed.items.length} поз.`);
     const parsed = res.parsed, target = qr ? qr.sum : parsed.total;
     const sum = parsed.items.reduce((s, i) => s + i.total, 0);
     // скидки, напечатанные отдельными строками, часто уже учтены в ценах — тогда вычитать их второй раз нельзя
@@ -906,6 +935,6 @@
     } finally { worker.terminate(); }
   }
 
-  window.Receipt = { scan, lev, fixName, fiscal, qrFromText, fns, compare, parseQR, parseText, prepForOCR, prepareReceipt, prepareNN, textBox, skewAngle, paperBox, findQR, ocrText, loadScript, loadImage, binarize, grayVariant, toCanvas, rotate };
+  window.Receipt = { scan, quickQR, lev, fixName, fiscal, qrFromText, fns, compare, parseQR, parseText, prepForOCR, prepareReceipt, prepareNN, textBox, skewAngle, paperBox, findQR, ocrText, loadScript, loadImage, binarize, grayVariant, toCanvas, rotate };
 })();
 

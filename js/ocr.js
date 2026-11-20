@@ -50,6 +50,20 @@
     } finally { clearTimeout(timer); }
   }
 
+  // Журнал шагов распознавания. Пишется сразу в память телефона, поэтому переживает вылет приложения:
+  // после перезапуска видно, на каком шаге iPhone его закрыл.
+  const TRACE = 'kuhnya-scan-trace';
+  let t0 = 0;
+  function trace(step, reset) {
+    try {
+      if (reset) { t0 = performance.now(); localStorage.setItem(TRACE, '[]'); }
+      const list = JSON.parse(localStorage.getItem(TRACE) || '[]');
+      list.push([Math.round(performance.now() - t0), step]);
+      localStorage.setItem(TRACE, JSON.stringify(list.slice(-40)));
+    } catch (e) { /* без памяти — без журнала */ }
+  }
+  window.scanTrace = trace;
+
   // Загрузить движок и модели (один раз). onProgress(0…1).
   function load(onProgress) {
     if (ready) return ready;
@@ -68,21 +82,31 @@
       const base = local ? LOCAL : ORT_CDN;
       const url = (name) => (local ? LOCAL + name : REMOTE[name]);
       p(0.02);
+      trace('движок: скрипт');
       if (!window.ort) await loadScript(base + 'ort.min.js');
       window.ort.env.wasm.wasmPaths = base;
       window.ort.env.wasm.numThreads = 1;
+      window.ort.env.wasm.proxy = false;
       p(0.1);
+      trace('движок: словарь');
       const dictTxt = new TextDecoder().decode(await fetchBuf(url('dict.txt')));
       dict = dictTxt.replace(/\r/g, '').split('\n');
       if (dict[dict.length - 1] === '') dict.pop();
-      const detBuf = await fetchBuf(url('det.onnx'), (v) => p(0.1 + v * 0.2));
-      const recBuf = await fetchBuf(url('rec.onnx'), (v) => p(0.3 + v * 0.5));
+      trace('движок: файл поиска текста');
+      let detBuf = await fetchBuf(url('det.onnx'), (v) => p(0.1 + v * 0.2));
+      trace('движок: файл чтения букв');
+      let recBuf = await fetchBuf(url('rec.onnx'), (v) => p(0.3 + v * 0.5));
       // без «запаса» памяти: иначе движок держит память под самую большую картинку и не отдаёт её,
-      // а iPhone при нехватке памяти перезапускает приложение
-      const so = { executionProviders: ['wasm'], enableCpuMemArena: false, enableMemPattern: false, executionMode: 'sequential', graphOptimizationLevel: 'all' };
+      // а iPhone при нехватке памяти перезапускает приложение. Упрощение модели («all») тоже ест память при запуске.
+      const so = { executionProviders: ['wasm'], enableCpuMemArena: false, enableMemPattern: false, executionMode: 'sequential', graphOptimizationLevel: 'basic' };
+      trace('движок: запуск поиска текста');
       det = await window.ort.InferenceSession.create(new Uint8Array(detBuf), so);
+      detBuf = null;
       p(0.9);
+      trace('движок: запуск чтения букв');
       rec = await window.ort.InferenceSession.create(new Uint8Array(recBuf), so);
+      recBuf = null;
+      trace('движок: готов');
       p(1);
     })().catch((e) => { ready = null; throw new Error('Не удалось загрузить распознавание (' + (e.message || e) + '). Нужен интернет при первом запуске'); });
     return ready;
@@ -230,9 +254,11 @@
   // каждая строка достаётся той полосе, где лежит её середина.
   async function detectTiled(canvas) {
     const STRIP = [1280, 768, 640, 512][Math.min(3, +opts.lowMem || 0)], OV = 192;
+    trace(`поиск текста: ${canvas.width}×${canvas.height}, полосы по ${STRIP}`);
     if (canvas.height <= STRIP + OV / 2) return detect(canvas);
     const all = [];
     for (let y = 0; y < canvas.height; y += STRIP - OV) {
+      trace(`поиск текста: полоса с ${y}`);
       const h = Math.min(STRIP, canvas.height - y), last = y + h >= canvas.height;
       const t = document.createElement('canvas'); t.width = canvas.width; t.height = h;
       t.getContext('2d').drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
@@ -259,11 +285,14 @@
     if (!boxes.length) return { lines: [], medH: 0, conf: 0 };
     const medH = medianH(boxes);
     let done = 0;
+    trace(`чтение строк: ${boxes.length} кусков`);
     for (const b of boxes) {
       const r = await readBox(canvas, b);
       b.text = r.text; b.conf = r.conf;
       if (onProgress && ++done % 8 === 0) onProgress(done / boxes.length);
+      if (done % 40 === 0) trace(`чтение строк: ${done} из ${boxes.length}`);
     }
+    trace('чтение строк: готово');
     const good = boxes.filter((b) => b.text);
     // в строку собираем куски, у которых середины по высоте близки
     const mid = (b) => (b.my != null ? b.my : (b.y1 + b.y2) / 2);
@@ -279,5 +308,5 @@
     return { lines, medH, conf, width: canvas.width, height: canvas.height };
   }
 
-  window.OCR = { load, read, find, opts };
+  window.OCR = { load, read, find, opts, trace };
 })();
