@@ -1114,6 +1114,7 @@
     [/^(крыло|крылья|крылышки|крылышко|крылышек)$/, 'крылья'],
     [/^(яйцо|яйца|яиц)$/, 'яйца'],
     [/^(коса|косичка|косички)$/, 'косичка'],
+    [/^(сырок|сырки|сырка|сырков|сырочек|сырочки)$/, 'сырок'],
   ];
   const rcCanon = (w) => { const hit = RC_CANON.find(([re]) => re.test(w)); return hit ? hit[1] : w; };
   const rcStems = (s) => U.stems(U.norm(s).split(/[\s-]+/).map(rcCanon).join(' '));
@@ -1145,6 +1146,37 @@
       }
     }
     return best ? best.name : words.slice(0, 3).join(' ') || productName(name);
+  }
+  // Строка чека и позиция из «Купить» — одно и то же? Сравниваем и с подставленным названием, и с текстом чека:
+  // «колбаса» из списка подходит к «Колбаса халяль сервел» → «сервелат», «курица» — к «куриным бёдрам».
+  // Главное слово должно совпасть строго: «сыр» не равен «сырку», «сало» — «салфеткам».
+  function rcListScore(listName, row) {
+    if (U.norm(listName) === U.norm(row.name)) return 100;
+    const ls = rcStems(listName);
+    if (!ls.length) return 0;
+    let best = 0;
+    for (const src of [row.name, row.orig]) {
+      const ss = src ? rcStems(src) : [];
+      if (!ss.length || !ss.some((s) => rcSame(s, ls[0]))) continue;
+      if (ls.every((l) => ss.some((s) => rcFits(s, l) || rcSame(s, l)))) best = Math.max(best, src === row.name ? 70 : 60);
+      else if (src === row.name && ss.every((s) => ls.some((l) => rcFits(l, s) || rcSame(l, s)))) best = Math.max(best, 50);
+    }
+    return best;
+  }
+  // для каждой отмеченной строки чека — позиция из «Купить», которую она закрывает (каждая позиция — один раз)
+  function rcListMatches(rows) {
+    const todo = Store.all('shopping').filter((s) => s.status !== 'bought'), used = new Set();
+    return rows.map((r) => {
+      if (!r.on || !r.name) return null;
+      let best = null, bs = 0;
+      for (const t of todo) {
+        if (used.has(t.id)) continue;
+        const sc = rcListScore(t.name, r);
+        if (sc > bs) { bs = sc; best = t; }
+      }
+      if (best) used.add(best.id);
+      return best;
+    });
   }
   // что подставить в строку чека: запомненное название или продукт справочника.
   // Если раньше строку назвали общо («свинина»), а в справочнике есть точнее («свинина лопатка») — берём точное.
@@ -1316,6 +1348,7 @@
     const date = d.date || (qr && qr.date) || U.today();
     const lastShop = (Store.all('shopping').filter((s) => s.shop).sort((a, b) => String(b.bought_on).localeCompare(String(a.bought_on)))[0] || {}).shop || '';
     const shops = [...new Set(['Пловдив', ...Store.all('shopping').map((s) => s.shop).filter(Boolean)])];
+    const lm = rcListMatches(d.items);
     return `<form class="form receipt" data-form="receipt">
       <div class="form-head"><h2>Проверьте чек</h2><button type="button" class="icon-btn" data-act="close" aria-label="Закрыть">${icon('x')}</button></div>
       ${d.fns ? `<p class="small ok-text">${icon('check', 'tiny')} <b>Проверено по базе ФНС</b>: ${esc(U.fmtDate(qr.date))}${qr.time ? `, ${esc(qr.time)}` : ''} · <b>${money(qr.sum)} ₽</b>. Названия, количества и цены — точные из чека.</p>`
@@ -1338,7 +1371,7 @@
       ${d.items.length ? `<div class="rc-head"><span></span><span>Продукт</span><span>Кол-во</span><span>₽</span><span></span></div>
       <div class="rc-rows">${d.items.map((it, i) => `<div class="rc-row ${it.on ? '' : 'off'}" data-i="${i}">
         <input type="checkbox" name="on" ${it.on ? 'checked' : ''} aria-label="Учитывать">
-        <div class="rc-name"><input name="n" data-suggest value="${esc(it.name)}" aria-label="Продукт">${it.orig && U.norm(it.orig) !== U.norm(it.name) ? `<small>${esc(it.orig)}</small>` : ''}${it.doubt ? '<small class="warn-text">цифры в строке не сходятся — проверьте сумму</small>' : ''}</div>
+        <div class="rc-name"><input name="n" data-suggest value="${esc(it.name)}" aria-label="Продукт">${it.orig && U.norm(it.orig) !== U.norm(it.name) ? `<small>${esc(it.orig)}</small>` : ''}${it.doubt ? '<small class="warn-text">цифры в строке не сходятся — проверьте сумму</small>' : ''}${lm[i] ? `<small class="ok-text rc-inlist">${icon('cart', 'tiny')} в «Купить»: ${esc(lm[i].name)} → куплено</small>` : ''}</div>
         <div class="rc-qty"><input name="q" inputmode="decimal" value="${esc(it.qty)}" aria-label="Количество">${unitSelect(it.unit)}</div>
         <input name="p" class="rc-price" inputmode="decimal" value="${esc(money(it.total))}" aria-label="Сумма, ₽">
         <button type="button" class="icon-btn" data-act="rc-del" data-i="${i}" aria-label="Удалить строку">${icon('trash')}</button>
@@ -1346,7 +1379,7 @@
       : `<p class="muted">Позиции распознать не получилось: попробуйте переснять ровнее и при хорошем свете. Или сохраните чек одной суммой.</p>`}
       <button type="button" class="btn small" data-act="rc-add">${icon('plus')}<span>Добавить строку</span></button>
       <div class="rc-sum" id="rc-sum">${receiptSumHtml(d)}</div>
-      <label class="check"><input type="checkbox" name="tolist" checked> Отметить купленным в списке покупок</label>
+      <label class="check"><input type="checkbox" name="tolist" checked> Что было в «Купить» — отметить купленным${lm.filter(Boolean).length ? ` (${lm.filter(Boolean).length})` : ''}</label>
       <label class="check"><input type="checkbox" name="topantry" checked> Добавить в «Есть дома»</label>
       ${d.text ? `<details class="rc-raw"><summary>Распознанный текст</summary><textarea readonly rows="8">${esc(d.text)}</textarea></details>` : ''}
       <div class="form-actions wrap">
@@ -1414,20 +1447,21 @@
     const rows = d.items.filter((i) => i.on && i.name && num2(i.total) > 0);
     if (!rows.length) { toast('Нет отмеченных позиций'); return; }
     const toList = f.tolist.checked, toPantry = f.topantry.checked;
-    const todo = Store.all('shopping').filter((s) => s.status !== 'bought');
+    // позиции из «Купить», которые есть в чеке, отмечаются купленными (уходят в историю), а продукт — в «Есть дома»
+    const matches = toList ? rcListMatches(rows) : rows.map(() => null);
     const used = new Set(), out = [];
-    for (const r of rows) {
-      const t = toList && todo.find((x) => !used.has(x.id) && (U.norm(x.name) === U.norm(r.name) || U.sameIng(x.name, r.name)));
+    rows.forEach((r, i) => {
+      const t = matches[i];
       const rec = { ...base, name: r.name, qty: r.qty, unit: r.unit, price: money(num2(r.total)), note: d.shop ? 'чек: ' + d.shop : 'чек' };
-      if (t) { used.add(t.id); out.push({ ...t, ...rec, name: t.name }); } else out.push(rec);
-    }
+      if (t) { used.add(t.id); out.push({ ...t, ...rec, name: t.name, from_list: true }); } else out.push(rec);
+    });
     await Store.saveMany('shopping', out);
     if (toPantry) for (const r of rows) await addToPantry(r.name, r.unit === 'шт' && !r.qty ? '1' : r.qty, r.unit);
     await rcLearn(rows.filter((r) => r.orig)); // запоминаем, как вы назвали строки чека
     receiptDraft = null; rcKeepDraft();
     closeModal();
     const sum = rows.reduce((s, r) => s + num2(r.total), 0);
-    toast(`Чек сохранён: ${rows.length} поз. на ${money(sum)} ₽${used.size ? `, из списка покупок: ${used.size}` : ''}`);
+    toast(`Чек сохранён: ${rows.length} поз. на ${money(sum)} ₽${used.size ? `. Из «Купить» отмечено купленным: ${used.size}${toPantry ? ', они теперь в «Есть дома»' : ''}` : ''}`);
   }
 
   // ---------- Расходы ----------
